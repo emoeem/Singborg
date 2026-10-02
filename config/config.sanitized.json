@@ -97,7 +97,8 @@
           "geosite/category-ads-all",
           "Ads_AWAvenue",
           "anti-AD",
-          "ads-extra"
+          "ads-extra",
+          "adblockfilters"
         ],
         "action": "predefined",
         "rcode": "NXDOMAIN"
@@ -162,10 +163,22 @@
         "data_plane": "cgroup",
         "dns_mode": "hijack",
         "bypass_private_address": true,
-        "ipv6": true
+        "ipv6": true,
+        "bypass_rule_set": [
+          "geoip/cn",
+          "geoip/cn-fresh",
+          "cncidr-mihomo"
+        ]
       },
       "shared": {
-        "enabled": false
+        "enabled": true,
+        "data_plane": "packet_rewrite",
+        "interface": [
+          "virbr0"
+        ],
+        "dns_mode": "hijack",
+        "bypass_private_address": true,
+        "ipv6": true
       }
     }
   ],
@@ -510,6 +523,12 @@
         "tag": "ads-extra",
         "format": "binary",
         "path": "/usr/share/sing-box-rule-sets/ads-extra.srs"
+      },
+      {
+        "type": "local",
+        "tag": "adblockfilters",
+        "format": "binary",
+        "path": "/usr/share/sing-box-rule-sets/adblockfilters.srs"
       }
     ],
     "rules": [
@@ -547,7 +566,8 @@
           "geosite/category-ads-all",
           "Ads_AWAvenue",
           "anti-AD",
-          "ads-extra"
+          "ads-extra",
+          "adblockfilters"
         ],
         "action": "reject"
       },

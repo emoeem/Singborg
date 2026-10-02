@@ -20,15 +20,23 @@ BACKUP_DIR="/etc/sing-box/backups"
 SHARED_IFACE=""
 DATA_PLANE="cgroup"
 FORCE=0
+BYPASS_CN=-1
+NO_SHARED=0
+SHARED_PLANE="packet_rewrite"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --shared)     SHARED_IFACE="${2:-}"; shift 2 ;;
     --data-plane) DATA_PLANE="${2:-}"; shift 2 ;;
     --force)      FORCE=1; shift ;;
-    *) printf 'FATAL 未知参数：%s（可用：--shared <接口> | --data-plane cgroup|tc | --force）\n' "$1" >&2; exit 1 ;;
+    --bypass-cn)  BYPASS_CN=1; shift ;;    # 让命中 CN IP 段的目标绕过 eBPF（不进 sing-box）
+    --no-bypass-cn) BYPASS_CN=0; shift ;;
+    --no-shared)  NO_SHARED=1; shift ;;
+    --shared-plane) SHARED_PLANE="${2:-packet_rewrite}"; shift 2 ;;   # packet_rewrite | socket_assign
+    *) printf 'FATAL 未知参数：%s（可用：--shared <接口> | --data-plane cgroup|tc | --bypass-cn | --no-bypass-cn | --no-shared | --shared-plane packet_rewrite|socket_assign | --force）\n' "$1" >&2; exit 1 ;;
   esac
 done
 case "$DATA_PLANE" in cgroup|tc) ;; *) printf 'FATAL --data-plane 只能是 cgroup 或 tc\n' >&2; exit 1 ;; esac
+case "$SHARED_PLANE" in packet_rewrite|socket_assign) ;; *) printf 'FATAL --shared-plane 只能是 packet_rewrite 或 socket_assign\n' >&2; exit 1 ;; esac
 
 WORK="$(mktemp -d /tmp/switch-ebpf.XXXXXX)"
 NEW_JSON="$WORK/new-config.json"
@@ -101,22 +109,83 @@ else
 fi
 
 if (( ALREADY_EBPF )); then
-  say "③ 已是 eBPF 模式：只改数据面 local.data_plane → $DATA_PLANE"
-  python3 - "$CONF" "$NEW_JSON" "$DATA_PLANE" <<'PY'
+  say "③ 已是 eBPF 模式：按需调整 local 选项（data_plane / bypass_rule_set）"
+  python3 - "$CONF" "$NEW_JSON" "$DATA_PLANE" "$BYPASS_CN" "$SHARED_IFACE" "$NO_SHARED" "$SHARED_PLANE" <<'PY'
 import json, sys
-conf_path, out_path, data_plane = sys.argv[1], sys.argv[2], sys.argv[3]
+conf_path, out_path, data_plane, bypass = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+shared_iface, no_shared = sys.argv[5], int(sys.argv[6])
+shared_plane = sys.argv[7] if len(sys.argv) > 7 else "packet_rewrite"
 cfg = json.load(open(conf_path, encoding="utf-8"))
+
+# 挑选规则集要非常小心：bypass_rule_set 会让命中的目标**绕过 eBPF**，
+# 所以只能放"本来就判直连"的 IP 表 —— 曾经自动挑出过 geoip/telegram（那是走代理的表），
+# 一旦放进去 Telegram 就会被绕过变成直连。这里改成：**从 route.rules 里 outbound=direct
+# 的规则**反推，且只取名字像 IP 表的（非 IP 规则会被 bypass 忽略，但取进来只会误导阅读）。
+def tag_name(r):
+    t = r.get("tag")
+    return t[0] if isinstance(t, list) and t else t
+def tags_of(cfg):
+    chosen, names = [], []
+    for r in cfg["route"]["rule_set"]:
+        n = tag_name(r)
+        if isinstance(n, str) and any(k in n.lower() for k in ("geoip", "cidr", "ip-")):
+            # 必须出现在某条 outbound=direct 的规则里，才允许 bypass
+            if any(n in (rule.get("rule_set") or [])
+                   for rule in cfg.get("route", {}).get("rules", [])
+                   if rule.get("outbound") == "direct"):
+                chosen.append(n)
+        # 反向自检：出现在代理规则里的，绝不允许
+    proxy_tags = {t for rule in cfg.get("route", {}).get("rules", [])
+                  if rule.get("outbound") not in (None, "direct")
+                  for t in (rule.get("rule_set") or [])}
+    bad = [t for t in chosen if t in proxy_tags]
+    return chosen, bad
+
 for i in cfg["inbounds"]:
-    if i.get("type") == "ebpf":
-        i.setdefault("local", {})["data_plane"] = data_plane
-        print(f"   local.data_plane → {data_plane}（其余保持不动）")
+    if i.get("type") != "ebpf":
+        continue
+    i.setdefault("local", {})["data_plane"] = data_plane
+    print(f"   local.data_plane → {data_plane}")
+    if bypass == 1:
+        chosen, bad = tags_of(cfg)
+        if bad:
+            raise SystemExit(f"内部错误：bypass 集合里混进了代理规则集的表 {bad}")
+        if not chosen:
+            print("   ⚠️ 配置里没有 IP 类规则集（geoip*/cidr*），无法设置 bypass_rule_set")
+        else:
+            i["local"]["bypass_rule_set"] = chosen
+            print(f"   local.bypass_rule_set → {chosen}")
+            print("   （命中这些 IP 段的目标直接绕过 eBPF、不进 sing-box；DNS 劫持不受影响）")
+    elif bypass == 0:
+        if i["local"].pop("bypass_rule_set", None) is not None:
+            print("   local.bypass_rule_set → 已清除")
+        else:
+            print("   local.bypass_rule_set 本来就没设")
+    # shared（下游接管）：之前只在 TUN→eBPF 分支处理，已在 eBPF 时这个开关是哑的
+    if no_shared:
+        if (i.get("shared") or {}).get("enabled"):
+            i["shared"] = {"enabled": False}
+            print("   shared → 已关闭")
+    elif shared_iface:
+        iface_exists = False
+        try:
+            with open("/proc/net/dev") as fh:
+                iface_exists = any(l.split(":")[0].strip() == shared_iface for l in fh.readlines()[2:])
+        except OSError:
+            pass
+        i["shared"] = {"enabled": True, "data_plane": shared_plane,
+                       "interface": [shared_iface], "dns_mode": "hijack",
+                       "bypass_private_address": True, "ipv6": True}
+        print(f"   shared → 接口 {shared_iface}（{shared_plane}"
+              + ("" if iface_exists else "；⚠️ 该接口当前不存在，sing-box 会持续重试")
+              + "）")
 json.dump(cfg, open(out_path, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 PY
 else
 say "③ 生成新配置（tun → ebpf${SHARED_IFACE:+，shared=$SHARED_IFACE}，data_plane=$DATA_PLANE）"
-python3 - "$CONF" "$NEW_JSON" "$SHARED_IFACE" "$DATA_PLANE" <<'PY'
+python3 - "$CONF" "$NEW_JSON" "$SHARED_IFACE" "$DATA_PLANE" "$SHARED_PLANE" <<'PY'
 import copy, json, sys
-conf_path, out_path, shared_iface, data_plane = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+conf_path, out_path, shared_iface, data_plane, shared_plane = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
 cfg = json.load(open(conf_path, encoding="utf-8"))
 local = {
     "enabled": True,
@@ -127,7 +196,7 @@ local = {
 }
 shared = {"enabled": False}
 if shared_iface:
-    shared = {"enabled": True, "data_plane": "packet_rewrite", "interface": [shared_iface],
+    shared = {"enabled": True, "data_plane": shared_plane, "interface": [shared_iface],
               "dns_mode": "hijack", "bypass_private_address": True, "ipv6": True}
 ebpf = {"type": "ebpf", "tag": "ebpf-in", "network": ["tcp", "udp"],
         "local": local, "shared": shared}

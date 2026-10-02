@@ -1,11 +1,21 @@
 # sing-box 能不能用 eBPF（本机 CachyOS 现状实测）
 
 结论时间：2026-10-02　方法：全部为本机真实二进制 / 真实内核实测，不是推断。
-对象：你正在跑的 sing-box 1.14.2（`/etc/sing-box/config.json`，`mixed-in` + `tun-in`）。
+对象：**当时**正在跑的 sing-box 1.14.2（`/etc/sing-box/config.json`，`mixed-in` + `tun-in`）。
+
+> 📌 **2026-10-02 晚复核（现状，先读这条）**：本文开头几节的"用不了 eBPF"是**自建包之前**的状态，**已被推翻**。
+> 现在 `/usr/bin/sing-box` 就是 fork 构建（`sing-box-ebpf 1.14.2.ref1nd-2`，`Tags: …,with_ebpf`），
+> 配置是 `mixed-in` + **`ebpf-in`**（`tun-in` 已移除），服务正跑在 eBPF 模式下：
+> `local` = `cgroup` ✅、`shared` = `packet_rewrite` on `virbr0` ✅（共享附件以 **TCX** 挂载，
+> `api ebpf` 实测 `role=shared mechanism=tcx framing=ethernet`）。
+> 下面凡说"现在用不了 eBPF / 现在的二进制不行"的段落，都按这条读。
 
 ## 0. 一句话结论
 
 > **你现在装的 sing-box 用不了 eBPF；不是配置问题，是二进制里没有这个入站。**
+>
+> ❌ **已被推翻（2026-10-02 晚）**：上面这句说的是**当时装的 Arch 官方包**。现在装的是自建 `sing-box-ebpf`
+> 包（fork 构建，`Tags` 含 `with_ebpf`），eBPF 入站**正在用**。本节其余事实性描述仍然成立。
 > eBPF 入站是 **`reF1nd/sing-box` 分支的实验特性**（编译标签 `with_ebpf`，仅 Linux / Android），
 > **上游 `SagerNet/sing-box` 没有这个功能**。Android 上的 NetProxy 模块正是内置了这个分支内核。
 >
@@ -17,11 +27,16 @@
 
 | 目标 | 能否用 eBPF | 依据 |
 |---|---|---|
-| 本机现装的 sing-box 1.14.2（Arch 包） | ❌ **不能** | 实测 `FATAL: unknown inbound type: ebpf`（exit=1） |
-| 本机换用 reF1nd 分支二进制 | ✅ **可以**（内核已具备，二进制已为你编好） | 见第 4、5 节 |
+| 当时的 sing-box 1.14.2（Arch 官方包，已卸） | ❌ **不能** | 实测 `FATAL: unknown inbound type: ebpf`（exit=1） |
+| **现装的 `sing-box-ebpf 1.14.2.ref1nd-2`（自建包，fork 构建）** | ✅ **已在用** | `sing-box version` 的 `Tags` 含 `with_ebpf`；`api ebpf` 显示 local(cgroup) + shared(tcx) 均已挂载（2026-10-02 晚实测） |
+| 本机换用 reF1nd 分支二进制 | ✅ **可以**（内核已具备，二进制已编好，见第 4 节） | 见第 4、5 节 |
 | Android + NetProxy 模块 | ✅ 设计如此（eBPF 是**唯一**数据面） | 模块无 TPROXY / REDIRECT 回退，内核不行就起不来 |
 
-## 1. 为什么现在的二进制不行（实测）
+## 1. 为什么**当时**的二进制不行（实测）
+
+> 📌 **2026-10-02 晚追注（本节保留原文，属历史记录）**：下面是 Arch 官方包的实测。现在装的 `sing-box-ebpf`
+> 包 `Tags` 里**有** `with_ebpf`（`sing-box version` 实测尾部 `…,badlinkname,tfogo_checklinkname0,with_ebpf`），
+> 所以"`check` 报 unknown inbound type"这个故障在当前二进制上不会复现。
 
 ```console
 $ cat > /tmp/ebpf-test.json   # 官方样例的 ebpf 入站
@@ -30,7 +45,7 @@ FATAL[0000] decode config at /tmp/ebpf-test.json: inbounds[0]: unknown inbound t
 exit=1
 ```
 
-现装二进制的编译标签里没有 `with_ebpf`：
+当时（Arch 官方包）二进制的编译标签里没有 `with_ebpf`：
 
 ```
 Tags: with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_clash_api,
@@ -46,7 +61,7 @@ Tags: with_gvisor,with_quic,with_dhcp,with_wireguard,with_utls,with_acme,with_cl
 | [`reF1nd/sing-box`](https://github.com/reF1nd/sing-box)（分支 `reF1nd-testing`） | ✅ 有：[eBPF 入站文档](https://raw.githubusercontent.com/reF1nd/sing-box/reF1nd-testing/docs/configuration/inbound/ebpf.zh.md)，标注"sing-box 1.15.0 中的更改 / 实验功能"，`//go:build with_ebpf && (linux \|\| android)` |
 | eBPF 程序本体 | 在独立依赖 [`CHIZI-0618/sing-ebpf`](https://github.com/CHIZI-0618/sing-ebpf) 里（`internal/bpfgen/*_bpfel.o`、`*_bpfeb.o` 预编译内嵌）→ **普通构建不需要 NDK / clang，只要 Go** |
 | [Fanju6/NetProxy-Magisk](https://github.com/Fanju6/NetProxy-Magisk)（Android） | 内置的"sing-box 内核"就是上面这个分支，构建标签含 `with_ebpf`（见其 `.github/resources.json`） |
-| 分支发布产物 | GitHub Releases **为空**（只有 tag）→ Linux / Android 二进制都要**自己编**，Arch 仓库更没有 |
+| 分支发布产物 | GitHub Releases **为空**（只有 tag；2026-10-02 晚复核仍为 0）→ Linux / Android 二进制都要**自己编**，Arch 仓库更没有（本机已用自建包 `~/pkgbuild-source/packages/sing-box-ebpf` 解决，见 4.1） |
 
 分支自述：*"本分支现已加入实验性的 eBPF 入站支持，可在 Linux 与 Root Android 上通过内核 eBPF 程序接管网络连接，
 无需创建 TUN 设备，也不依赖传统的 iptables/nftables REDIRECT 或 TPROXY 规则"*。
@@ -82,7 +97,7 @@ Linux 7.2.8-1-cachyos-bore-lto #1 SMP PREEMPT_DYNAMIC x86_64
 | cgroup v2 统一挂载 | `cgroup2 /sys/fs/cgroup cgroup2 rw,…` | ✅ |
 | bpffs | `bpf /sys/fs/bpf bpf rw,…` | ✅ |
 | LPM trie 内核缺陷（6.6.0–6.6.46） | 7.2.8，不在受影响区间 | ✅ |
-| 现有 tc 钩子冲突 | `tc filter show` 所有网卡 **无任何 filter**（dae 残留早已清净） | ✅ |
+| 现有 tc 钩子冲突 | `tc filter show` 所有网卡 **无任何 filter**（dae 残留早已清净） | ✅（2026-10-02 晚复核：`virbr0` 上有 libvirt 自己的 `htb` qdisc + 一条 u32 filter（csum 动作），不是 eBPF 钩子；shared 走的是 **TCX**，与这类 filter 不冲突） |
 
 ### 3.1 root 预检正式结果：**全绿通过** ✅
 
@@ -109,7 +124,7 @@ sudo ~/.cache/sing-box-bin/sing-box-v1.14.2-reF1nd-with_ebpf \
 | IPv4/IPv6 透明 TCP/UDP、original-dst、packet-info | 透明 socket 全套通过 |
 | `BPF JIT` | `bpf_jit_enable=1` |
 | `locked-memory limit` | RLIMIT_MEMLOCK 自动调成 unlimited |
-| `TC interface framing virbr0` | `ether` 帧 ✅ → **虚拟机共享路径可用** |
+| `TC interface framing virbr0` | `ether` 帧 ✅ → **虚拟机共享路径可用**（2026-10-02 晚已端到端实测通过，见 3.2 追注） |
 | `LPM trie policy updates` | 7.2.8 不在缺陷区间，PASS |
 
 > ⚠️ **一个必须注意的细节**：探测里那条 `cgroup path` 报的是
@@ -125,12 +140,12 @@ sudo ~/.cache/sing-box-bin/sing-box-v1.14.2-reF1nd-with_ebpf \
 
 ## 3.2 A/B 试跑结果（2026-10-02 08:54，同一套判据）
 
-用 `ebpf-trial/run-ebpf-trial.sh` 实测（脚本先停 TUN 服务、前台起 eBPF 核心、跑完恢复）：
+用 `trial/run-ebpf-trial.sh` 实测（脚本先停 TUN 服务、前台起 eBPF 核心、跑完恢复；脚本在仓库 `trial/` 下）：
 
 | 判据 | TUN 基线 | **eBPF 阶段** | 结论 |
 |---|---|---|---|
 | `tun0_state` | present | **absent** | 真的没有 TUN 设备 |
-| `proxy_exit_ip` | 103.151.172.73 | **<proxy-exit-ip>** | 无 TUN 仍在走代理 ✅ |
+| `proxy_exit_ip` | <proxy-exit-ip> | **<proxy-exit-ip>** | 无 TUN 仍在走代理 ✅ |
 | `ipv6_http_code` | 200 | **200** | IPv6 正常 ✅ |
 | `ipv6_blackhole` | 0 | **0** | 无黑洞规则 ✅ |
 | `direct_isp_ip` | <home-ip> 电信 | <home-ip> 电信 | 国内仍直连 ✅ |
@@ -148,6 +163,13 @@ sudo ~/.cache/sing-box-bin/sing-box-v1.14.2-reF1nd-with_ebpf \
    每轮 `flush-caches`）。
 2. 第二轮 `SHARED_IFACE=virbr0` 的"基线"其实是**无代理直连**（因为第一轮恢复失败），
    所以那份 diff 无参考价值；**虚拟机共享路径仍未端到端验证**（当时 `virbr0` 是 DOWN，没有虚拟机在跑）。
+
+> ✅ **2026-10-02 晚追注：这一条已经补上了。** `shared`（`packet_rewrite` on `virbr0`）已做端到端实测
+> （netns + veth 接到 `virbr0`）：**直连与走代理两条路都通过**——Clash API 命中
+> `链路=Proxy → Auto → 新加坡Z02`，`virbr0` 抓包 11 SYN / 11 SYN-ACK，`curl` 200。
+> 另外，`local` 的 `tc` 数据面实测**不可用**（`register TC eBPF TCP listener: operation not supported`），
+> 所以 5.2 里"cgroup 被拒就换 tc"的兜底**不成立**（见 5.2 / 6 的追注）。
+> 🔒 本节表格里 TUN 基线的出口 IP 原文是真实代理出口地址，公开仓库已脱敏为 `<proxy-exit-ip>`。
 
 ## 4. 我现场编译出来的二进制（已放好）
 
@@ -186,7 +208,7 @@ podman run --rm -v /tmp/sb-fork:/src -v gomodcache:/go/pkg/mod -w /src \
 > ✅ **已落地**：`~/pkgbuild-source/packages/sing-box-ebpf/`（PKGBUILD + .SRCINFO）。
 > 容器内真实 `makepkg` 构建通过（产物 25.5 MB，含二进制 + 两个 systemd 单元 + license），
 > namcap 仅两条 Go 静态二进制常态告警（`lacks FULL RELRO` / `lacks PIE`，**退出码 0，不会中断 CI**）。
-> 配套的管理界面见 `singbox-panel-guide.md`（`packages/sing-box-panel/`）。
+> 配套的管理界面见 `docs/03-面板指南.md`（源码在 `~/pkgbuild-source/packages/sing-box-panel/`）。
 
 你那个仓库（CI 从 `packages/<name>/{PKGBUILD,.SRCINFO}` 构建 → 发到 `repo` 分支 → pacman 直接装）
 正好解决"没有预编译二进制"这件事：**一次打包，以后 pacman 升级，不用手工编。**
@@ -208,6 +230,8 @@ conflicts=('sing-box' 'sing-box-git')
 - `with_naive_outbound` **不要带**（Linux + `CGO_ENABLED=0` 编不过，见第 8 节）。
 - `conflicts=('sing-box')` 是刻意的：两个透明代理不能共存，装这个就等于顶掉官方包。
 - 打包时顺手把发行版单元的 capability 限制补上 `CAP_BPF CAP_PERFMON`（见 5.2），否则服务起不来。
+  （**2026-10-02 晚实测**：自建包最终用的是 `User=root` + **不设** `CapabilityBoundingSet` + `LimitMEMLOCK=infinity`，
+  这样最省事，不需要逐个补 CAP。）
 
 > 我没有直接改你的仓库——你说一声我就按仓库约定加上 `PKGBUILD` + `.SRCINFO`（并用 `makepkg --printsrcinfo` 自检）。
 
@@ -249,7 +273,13 @@ conflicts=('sing-box' 'sing-box-git')
   只支持以太网帧接口（raw-IP / PPP / 隧道链路要换 `socket_assign`）。
 - 一个实例**只能有一个** ebpf 入站做 local 接管；**绝对不要 TUN 与 eBPF 同时开**（等于两个透明代理）。
 
-### 5.2 systemd：现在的单元跑不了 eBPF
+### 5.2 systemd：**当时**的发行版单元跑不了 eBPF
+
+> ✅ **2026-10-02 晚复核：这条建议已经落地了。** 现在用的是自建包自带的单元
+> （`/usr/lib/systemd/system/sing-box.service`，来自 `sing-box-ebpf`），实测就是 **`User=root` + 完全不限制
+> `CapabilityBoundingSet` + `LimitMEMLOCK=infinity`**；`systemctl show sing-box` 显示
+> `ActiveState=active`、`NRestarts=0`，不需要逐个补 `CAP_BPF`/`CAP_PERFMON`。
+> 下面这段是**旧单元**的体检记录（保留原文）。
 
 发行版单元是 `User=sing-box` + `CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_SYS_PTRACE CAP_DAC_READ_SEARCH`
 ——**没有 `CAP_BPF`/`CAP_PERFMON`**，而且 local `cgroup` 数据面要挂到 cgroup v2 **根层级**（特权操作）。
@@ -260,6 +290,10 @@ conflicts=('sing-box' 'sing-box-git')
 
 **兜底（root 挂根 cgroup 被拒时）**：把 `local.data_plane` 从 `cgroup` 换成 **`tc`**
 （跟随默认接口，预检里 veth / 策略路由 / socket lookup 能力都已 PASS），代价是依赖默认接口、需要建 veth。
+
+> ❌ **2026-10-02 晚推翻：这条兜底不成立。** 本机 `local` 的 `tc` 数据面**实测起不来**：
+> `FATAL start service: start inbound/ebpf[ebpf-in]: register TC eBPF TCP listener: operation not supported`。
+> 教训：预检（不挂 hook 的加载探测）PASS **不等于**能挂上并跑通；`cgroup` 挂载若被拒，没有 `tc` 这条退路。
 
 ### 5.3 预检（已跑过：`preflight_passed`，51 PASS / 0 fail）
 
@@ -273,14 +307,15 @@ sudo ~/.cache/sing-box-bin/sing-box-v1.14.2-reF1nd-with_ebpf \
 
 ### 5.4 切换顺序与回滚（**已于 2026-10-02 10:37 执行成功**，脚本：`switch-to-ebpf.sh`）
 
-> ✅ 现成脚本（在 workspace 目录）：`sudo ./switch-to-ebpf.sh`（可选 `--shared virbr0`）。
+> ✅ 现成脚本（仓库 `scripts/` 目录）：`sudo scripts/switch-to-ebpf.sh`（可选 `--shared virbr0`、
+> `--shared-plane packet_rewrite|socket_assign`）。
 > 它做完整安全管线：内核预检 → tun→ebpf 改配置 → `check` → 备份 → 原子替换 → 重启 →
 > **eBPF 专属健康检查**（`api ebpf` 附件状态 + 不经代理的请求是否走代理 + 国内是否仍直连 + DNS 是否仍拦）
 > → 任一失败自动回滚到 TUN。下面是不用脚本时的等价手工步骤。
 
 ```bash
 sudo cp -a /etc/sing-box/config.json /etc/sing-box/config.json.pre-ebpf.$(date +%Y%m%d-%H%M%S)   # 1 备份
-sudo ./switch-to-local-rules.sh --dry-run                                                         # 2 仍用旧的 TUN 脚本预览
+sudo scripts/switch-to-local-rules.sh --dry-run                                                   # 2 仍用旧的 TUN 脚本预览
 sudo systemctl stop sing-box                                                                      # 3 停服务
 #   4 用新二进制 + ebpf 配置在前台手跑，盯日志；出问题 Ctrl-C 即回到无代理状态
 sudo ~/.cache/sing-box-bin/sing-box-v1.15.0-alpha.9-reF1nd-with_ebpf -D /var/lib/sing-box -C /etc/sing-box run
@@ -305,11 +340,11 @@ ip -6 rule show | grep -c unreachable                                    # 期�
 |---|---|
 | ⚠️ 版本 | 分支基线的 tag 可选 stable（`v1.14.2-reF1nd`，与你现装同基线）或 alpha（`v1.15.0-alpha.9-reF1nd`）；**eBPF 本身不是 alpha 专属** |
 | ⚠️ 维护 | 无 Linux release 产物、无 Arch 包 → 每次升级都要自己 `podman`/Go 重编；**建议用 `~/pkgbuild-source` 打包解决**（见 4.1） |
-| ⚠️ 覆盖面 | local `cgroup` 只管**本机 socket**（含 rootless podman，因为它在同一 cgroup 树里）；**转发流量（libvirt VM）不在内**，那要 shared + `virbr0`（预检已确认 virbr0 是 ether 帧 ✅）。而 TUN 的 `auto_route` 现在是一把全包住 |
-| ⚠️ 首次启动 | root 挂根 cgroup 的权限/独占性只在真启动时校验（3.1）；被拒就换 `tc` 数据面 |
+| ⚠️ 覆盖面 | local `cgroup` 只管**本机 socket**；**转发流量（libvirt VM）不在内**，那要 shared + `virbr0`（已端到端实测 ✅）。**❌ 原文"含 rootless podman"是错的**：2026-10-02 晚实测 rootless podman（pasta）容器**仍走不了代理**——境外失败、国内直连与 DNS 劫持正常、`--network=host` 可用；pasta 属**用户态转发**，local 与 shared 两条路都不覆盖它。而 TUN 的 `auto_route` 是一把全包住 |
+| ⚠️ 首次启动 | root 挂根 cgroup 的权限/独占性只在真启动时校验（3.1）——实际启动**通过了**（`api ebpf` 可见 `role=local mechanism=cgroup`，服务 `NRestarts=0`）；~~被拒就换 `tc` 数据面~~ ❌ **`tc` 不可用**（见 5.2 追注），没有这条退路 |
 | ✅ 收益 1 | **分应用分流**（`include_uid`/`exclude_uid`）——这是 TUN 在 Linux 上给不了的，且预检确认 `bpf_get_current_uid_gid` 可用 |
 | ✅ 收益 2 | 不建 TUN 设备、无 TUN 拷贝，理论上更省；不用 iptables/nftables REDIRECT/TPROXY |
-| ✅ 收益 3 | alpha 那条基线（1.15）能让你评审里惦记的 DNS `type: "group"` 故障转移组用上 |
+| ✅ 收益 3 | ~~alpha 那条基线（1.15）能让你评审里惦记的 DNS `type: "group"` 故障转移组用上~~ ❌ **2026-10-02 晚更正**：`type: "group"` 在 **1.14.2-reF1nd** 上就能用——线上配置的 `dns-proxy` / `dns-direct` 正是 `type: "group"`，不需要 1.15 |
 | ✅ 现状对比 | 你这套 TUN 已经过完整审计：DNS 劫持完整、v6 已修、podman 透明、并发/大文件都过。**没有刚需就别换**；当年 daed 的 eBPF 正是把 DNS 和 IPv6 TCP 弄坏才被换掉的 |
 
 **建议（预检通过后的版本）**：
@@ -317,6 +352,10 @@ ip -6 rule show | grep -c unreachable                                    # 期�
 > 顺序：**先打包（4.1）→ 再备份/前台试跑/回滚（5.4）**；只在你要"分应用"或"去掉 TUN"时才真正切。
 > 只是想尝鲜的话，成本最低的试法是：**不开机自启**，前台跑一次、跑完立刻 Ctrl-C，然后用审计报告里那套判据（DNS 四源一致、
 > 国内直连 IP、`curl -6` 200、`ip -6 rule` 无 unreachable、podman 出口 IP）打一遍分。
+>
+> ✅ **2026-10-02 晚复核**：切换**已经做了**（见 5.4），当日晚又补完了 shared 的端到端验证；服务至今
+> `ActiveState=active`、`NRestarts=0`。唯一没被"审计判据"覆盖的是 **rootless podman（pasta）**：
+> 它在 eBPF 下仍走不了代理（见上表"覆盖面"行）。
 
 ## 7. Android（NetProxy 模块）怎么判断能不能用
 
@@ -329,7 +368,7 @@ su -c '/data/adb/modules/netproxy/netproxyctl ebpf status all --raw'
 ```
 
 - 默认数据面：本机 `cgroup`（`EBPF_LOCAL_DATA_PLANE=cgroup`），共享网络 `packet_rewrite`（`EBPF_SHARED_ENABLED=0` 默认关）。
-- 需要：Magisk / KernelSU / APatch + Root；内核支持 BPF、TC classifier、透明 socket、socket lookup；本机路径还要 veth 与策略路由。
+- 需要：Magisk / KernelSU / APatch + Root；内核支持 BPF、TC classifier、透明 socket、socket lookup；本机路径还要 veth 与策略路由（**未复核**：本机实测 `tc` 数据面在 7.2.8 上不可用、而 `cgroup` 路径不依赖 veth，这句是照模块文档转述的，没有实机验证）。
 - 它的"sing-box 配置"与你的 `/etc/sing-box/config.json` **不是一份东西**：它用 `runtime/` 现生成的 Provider + eBPF 配置，
   静态主配置在 `config/singbox/config.json`。你的 TUN 配置思路（规则集、DoH、selector）可以照搬，但 `tun` 入站整段要去掉。
 
@@ -358,6 +397,13 @@ podman rmi docker.io/library/golang:1.26
 
 ## 9. 踩坑记录：`cache.db` 属主（试跑时踩到，已修）
 
+> 📌 **2026-10-02 晚追注（本节保留原文，属历史记录）**：现行单元是 `User=root`（自建 `sing-box-ebpf` 包），
+> `/var/lib/sing-box/cache.db` 现为 `root:root 644`，所以"被改成 emo 属主导致服务写不了"这个具体故障
+> 在当前单元下不会复现；但下面两条铁律（别拿线上配置跑非 root `check`、`active` ≠ 就绪）仍然成立。
+> ⚠️ 另：**本次没能复现"`check` 初始化 cache-file"这一步**——把 `cache_file.path` 指到可写临时目录后
+> `sing-box check` exit=0 且**没有生成文件**；带 `ebpf` 入站时则更早地在 `map create: operation not permitted`
+> 失败。所以"`check` 走到服务初始化"是真的（会去建 eBPF map），但"它顺手重建了 `cache.db`"这一环**存疑**。
+
 **症状**：`systemctl restart sing-box` 后服务 active 一秒即挂，无限重启循环，`tun0` 消失：
 
 ```
@@ -383,3 +429,4 @@ sudo chown sing-box:sing-box /var/lib/sing-box/cache.db && sudo systemctl restar
    `experimental.cache_file.path` 改到 `/tmp`（试跑脚本 v2 已内置这个隔离）。
 2. **`systemctl` 报 `active` ≠ TUN 已就绪**：实测有 1 秒级竞态，`is-active` 为真时 `tun0`
    可能还没建出来。判断健康要 `is-active` + `ip link show tun0` 一起看（脚本 v2 已改成轮询 10s）。
+   （**eBPF 模式下没有 `tun0`**，判据要换成 `api ebpf` 的附件状态 + "不设代理的出口 == 经代理的出口"，见 09 文档 §9。）

@@ -19,7 +19,17 @@ CONF="${CONF:-/etc/sing-box/config.json}"
 BIN="${BIN:-sing-box}"
 CLASH="${CLASH:-http://127.0.0.1:9090}"
 KEEP=0
-[[ "${1:-}" == "--keep" ]] && KEEP=1
+DEBUG_LOG=0
+SHARED_ONLY=0
+for a in "$@"; do
+    case "$a" in
+        --keep) KEEP=1 ;;
+        --debug-log) DEBUG_LOG=1 ;;
+        --shared-only) SHARED_ONLY=1 ;;
+        -h|--help) printf '用法：sudo %s [--keep] [--debug-log]\n  --keep       保留 netns/veth 现场\n  --debug-log  临时把 log.level 调到 debug、跑完自动还原（看清 sing-box 的判定）\n' "$0"; exit 0 ;;
+        *) printf '不认识的参数：%s\n' "$a" >&2; exit 2 ;;
+    esac
+done
 
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m %s\n' "$*"; }
@@ -51,7 +61,12 @@ CLIENT_IP="$(awk -F. -v p="250" '{print $1"."$2"."$3"."p}' <<<"$GW")"
 say "网段 $CIDR → 测试客户端 $CLIENT_IP/$PREFIX，网关 $GW"
 
 NS=sb-shared-test; VH=sbveth-h; VC=sbveth-c
+PCAP=/tmp/sb-shared-test.pcap
+TCPDUMP_PID=""
 cleanup() {
+    restore_conf 2>/dev/null || true
+    [[ -n $TCPDUMP_PID ]] && kill "$TCPDUMP_PID" 2>/dev/null || true
+    [[ -n $TCPDUMP_PID ]] && wait "$TCPDUMP_PID" 2>/dev/null || true
     ip netns del "$NS" 2>/dev/null || true
     ip link del "$VH" 2>/dev/null || true
     rm -rf "/etc/netns/$NS" 2>/dev/null || true
@@ -59,6 +74,66 @@ cleanup() {
 trap 'cleanup' EXIT
 cleanup   # 先清一遍，避免上次残留
 sleep 0.5
+
+CONF_BAK=""
+restore_conf() {
+    if [[ -n $CONF_BAK && -f $CONF_BAK ]]; then
+        cp -a "$CONF_BAK" "$CONF"
+        systemctl restart sing-box
+        sleep 2
+        printf '   已还原原配置并重启（log.level 恢复）\n'
+        CONF_BAK=""
+    fi
+}
+if (( SHARED_ONLY )); then
+    say "⓪ 临时关掉 local 路径（只留 shared）—— 这样 netns 客户端的流量**只可能**走 shared"
+    warn "期间宿主自身流量不被代理（约 20 秒），脚本跑完会自动还原并重启"
+    CONF_BAK="$(mktemp /tmp/sb-conf-bak.XXXXXX)"
+    cp -a "$CONF" "$CONF_BAK"
+    python3 - "$CONF" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p, encoding="utf-8"))
+for i in d.get("inbounds", []):
+    if i.get("type") == "ebpf":
+        # 关键：不能只把 enabled 改 false —— 留着 data_plane 会让 sing-box 启动直接 FATAL
+        # （实测：initialize inbound: local.data_plane requires local interception）
+        i["local"] = {"enabled": False}
+        i["shared"] = dict(i.get("shared") or {}, enabled=True)
+json.dump(d, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+PY
+    if ! "$BIN" check -c "$CONF" >/tmp/sb-conf-check.log 2>&1; then
+        tail -3 /tmp/sb-conf-check.log | sed 's/^/     /'
+        warn "改完的配置 check 不通过 —— 立刻还原，服务不动"
+        restore_conf
+        exit 1
+    fi
+    systemctl restart sing-box
+    sleep 2
+    printf '   local 已关闭，shared 保持启用（check 已通过）\n'
+fi
+
+if (( DEBUG_LOG )); then
+    say "⓪ 临时把 log.level 调到 debug（跑完自动还原）"
+    CONF_BAK="$(mktemp /tmp/sb-conf-bak.XXXXXX)"
+    cp -a "$CONF" "$CONF_BAK"
+    python3 - "$CONF" <<'PY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p, encoding="utf-8"))
+d.setdefault("log", {})["level"] = "debug"
+json.dump(d, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+PY
+    if ! "$BIN" check -c "$CONF" >/tmp/sb-conf-check.log 2>&1; then
+        tail -3 /tmp/sb-conf-check.log | sed 's/^/     /'
+        warn "check 不通过 —— 立刻还原"
+        restore_conf
+        exit 1
+    fi
+    systemctl restart sing-box
+    sleep 2
+    printf '   log.level=debug，服务已重启（check 已通过）\n'
+fi
 
 say "① 建 netns + veth，并把宿主端接进 $IFACE"
 ip netns add "$NS"
@@ -80,6 +155,17 @@ printf '   netns DNS: %s\n' "$(tr '\n' ' ' < "/etc/netns/$NS/resolv.conf")"
 printf '   桥状态: %s\n' "$(cat /sys/class/net/$IFACE/operstate 2>/dev/null || echo '?')"
 printf '   客户端路由: %s\n' "$(ip netns exec "$NS" ip route show default | head -1)"
 sleep 2   # 等桥 learning / carrier 稳定
+
+# 抓包：客户端那一侧的所有报文（这是"包死在哪儿"的最直接证据）
+if command -v tcpdump >/dev/null 2>&1; then
+    rm -f "$PCAP"
+    tcpdump -i "$IFACE" -nn -s 128 -w "$PCAP" "host $CLIENT_IP" >/dev/null 2>&1 &
+    TCPDUMP_PID=$!
+    sleep 1
+    say "   已开始抓包 → $PCAP（接口 $IFACE，过滤 host $CLIENT_IP）"
+else
+    warn "没装 tcpdump，跳过抓包取证"
+fi
 
 inside() { ip netns exec "$NS" "$@"; }
 say "② 在 netns 里发请求（同时盯 Clash API，看有没有来自 $CLIENT_IP 的连接）"
@@ -111,20 +197,71 @@ def poll():
         time.sleep(0.03)
 t = threading.Thread(target=poll, daemon=True); t.start()
 # 从 netns 里发真实请求（由外层 shell 调用）
-subprocess.run(["ip","netns","exec",ns,"sh","-c",
-                "curl -s -m 12 https://api.ipify.org > /tmp/sb-ns-exit.txt 2>/dev/null; "
-                "curl -s -m 12 https://myip.ipip.net > /tmp/sb-ns-cn.txt 2>/dev/null; "
-                "curl -s -m 12 -o /dev/null https://www.google.com 2>/dev/null; echo $? > /tmp/sb-ns-google.txt; "
-                "curl -s -m 12 https://api.ipify.org -x http://192.168.122.1:7892 >/dev/null 2>&1 || true"],
-               capture_output=True, timeout=60)
+probe = r"""
+{
+  echo "@@ADDR"; ip -brief addr
+  echo "@@ROUTE4"; ip route
+  echo "@@ROUTE6"; ip -6 route
+  echo "@@RESOLV"; cat /etc/resolv.conf
+  echo "@@DNS_AAAA"; getent ahostsv6 api.ipify.org | head -2
+  echo "@@DNS_A"; getent ahostsv4 api.ipify.org | head -2
+  echo "@@CURL4"; curl -4 -s -m 15 -o /dev/null -w "http=%{http_code} ip=%{remote_ip}\n" https://api.ipify.org
+  echo "@@CURL6"; curl -6 -s -m 8  -o /dev/null -w "http=%{http_code} ip=%{remote_ip}\n" https://api.ipify.org
+  echo "@@CURLDEF"; curl -s -m 15 -o /dev/null -w "http=%{http_code} ip=%{remote_ip}\n" https://api.ipify.org
+  echo "@@EXIT4"; curl -4 -s -m 15 https://api.ipify.org
+  echo "@@CN"; curl -4 -s -m 12 https://myip.ipip.net
+  echo "@@GOOGLE4"; curl -4 -s -m 15 -o /dev/null -w "http=%{http_code} ip=%{remote_ip}\n" https://www.google.com
+  echo "@@NEIGH"; ip neigh
+  echo "@@PINGGW"; ping -c1 -W2 192.168.122.1 >/dev/null 2>&1 && echo ok || echo fail
+  echo "@@ENV_PROXY"; env | grep -i proxy || echo none
+  echo "@@ROUTE_GET"; ip route get 104.26.13.205 2>&1 | head -2
+  echo "@@LINKSTAT"; ip -s link show sbveth-c | tail -3
+  echo "@@CURLV_CN"; curl -4 -v -m 8 https://myip.ipip.net 2>&1 | grep -aE "Trying|connect to|from |Failed|error|refused" | tail -5
+  echo "@@CURLV_FOREIGN"; curl -4 -v -m 8 https://api.ipify.org 2>&1 | grep -aE "Trying|connect to|from |Failed|error|refused" | tail -5
+  echo "@@CURLRC"; ls -la /root/.curlrc /etc/curlrc 2>/dev/null || echo none; echo "---"; cat /root/.curlrc 2>/dev/null || true
+  echo "@@CURLV_CLEANENV"; env -i /usr/bin/curl -4 -v -m 8 https://api.ipify.org 2>&1 | grep -aE "Trying|connect to|from |Failed|error|refused" | tail -5
+  echo "@@CURLV_BIND"; env -i /usr/bin/curl -4 -v --interface 192.168.122.250 -m 8 -o /dev/null -w "http=%{http_code} ip=%{remote_ip}\n" https://api.ipify.org 2>&1 | tail -4
+} > /tmp/sb-ns-diag.txt 2>&1
+"""
+subprocess.run(["ip","netns","exec",ns,"sh","-c",probe], capture_output=True, timeout=90)
 time.sleep(0.5); stop.set(); t.join(timeout=2)
 print(json.dumps({"hits": hits[:6], "total": len(hits)}))
 PY
 )"
-NS_EXIT="$(cat /tmp/sb-ns-exit.txt 2>/dev/null || true)"
-NS_CN="$(cat /tmp/sb-ns-cn.txt 2>/dev/null || true)"
-NS_GOOGLE="$(cat /tmp/sb-ns-google.txt 2>/dev/null || true)"
-rm -f /tmp/sb-ns-exit.txt /tmp/sb-ns-cn.txt /tmp/sb-ns-google.txt
+NS_DIAG="$(cat /tmp/sb-ns-diag.txt 2>/dev/null || true)"
+rm -f /tmp/sb-ns-diag.txt
+field() { printf '%s' "$NS_DIAG" | python3 -c "
+import sys, re
+name = sys.argv[1]
+txt = sys.stdin.read()
+m = re.search(r'^@@' + re.escape(name) + r'$\n(.*?)(?=^@@|\Z)', txt, re.S | re.M)
+print(' '.join((m.group(1) if m else '').split()))
+" "$1"; }
+NS_EXIT="$(field EXIT4 | tr -d ' ')"
+NS_CN="$(field CN)"
+NS_GOOGLE_HTTP="$(field GOOGLE4)"
+NS_CURL4="$(field CURL4)"
+NS_CURL6="$(field CURL6)"
+NS_CURLDEF="$(field CURLDEF)"
+NS_DNS_A="$(field DNS_A)"
+NS_DNS_AAAA="$(field DNS_AAAA)"
+NS_ROUTE6="$(field ROUTE6)"
+NS_NEIGH="$(field NEIGH)"
+NS_ENVPROXY="$(field ENV_PROXY)"
+NS_ROUTEGET="$(field ROUTE_GET)"
+NS_LINKSTAT="$(field LINKSTAT | tr -s ' ')"
+block() { printf '%s' "$NS_DIAG" | python3 -c "
+import sys, re
+name = sys.argv[1]
+txt = sys.stdin.read()
+m = re.search(r'^@@' + re.escape(name) + r'$\n(.*?)(?=^@@|\Z)', txt, re.S | re.M)
+print((m.group(1) if m else '').rstrip())
+" "$1"; }
+NS_CURLV_CN="$(block CURLV_CN)"
+NS_CURLV_FOREIGN="$(block CURLV_FOREIGN)"
+NS_CURLRC="$(block CURLRC)"
+NS_CURLV_CLEAN="$(block CURLV_CLEANENV)"
+NS_CURLV_BIND="$(block CURLV_BIND)"
 PROXY_EXIT="$(curl -s -m 10 -x http://127.0.0.1:7892 https://api.ipify.org 2>/dev/null || true)"
 HOST_DIRECT="$(curl -s -m 10 https://api.ipify.org 2>/dev/null || true)"
 
@@ -133,7 +270,22 @@ printf '   netns 客户端出口 : %s\n' "${NS_EXIT:-（失败）}"
 printf '   经本地代理口出口 : %s\n' "${PROXY_EXIT:-（失败）}"
 printf '   宿主不设代理出口 : %s\n' "${HOST_DIRECT:-（失败）}"
 printf '   netns 查国内出口 : %s\n' "${NS_CN:0:64}"
-printf '   netns 访问 google: %s\n' "$( [[ ${NS_GOOGLE:-1} == 0 ]] && echo '成功' || echo "失败(exit=${NS_GOOGLE:-?})" )"
+printf '   netns curl -4 代理测试 : %s\n' "${NS_CURL4:-?}"
+printf '   netns curl -6 代理测试 : %s\n' "${NS_CURL6:-?}（netns 无 IPv6 则必然失败，属正常）"
+printf '   netns curl 默认        : %s\n' "${NS_CURLDEF:-?}"
+printf '   netns google(http)     : %s\n' "${NS_GOOGLE_HTTP:-?}"
+printf '   netns 解析(AAAA/A)     : %s / %s\n' "${NS_DNS_AAAA:-无}" "${NS_DNS_A:-无}"
+printf '   netns IPv6 路由        : %s\n' "${NS_ROUTE6:-（无，符合预期）}"
+printf '   netns 邻居表           : %s\n' "${NS_NEIGH:-空}"
+printf '   netns 代理环境变量     : %s\n' "${NS_ENVPROXY:-none}"
+printf '   netns 去 104.26.13.205 的路由: %s\n' "${NS_ROUTEGET:-?}"
+printf '   netns 接口计数         : %s\n' "${NS_LINKSTAT:-?}"
+echo "   A/B 对照（这是关键）:"
+printf '     国内(可用)  : %s\n' "$(printf '%s' "${NS_CURLV_CN:-?}" | tr '\n' ' ' | cut -c1-150)"
+printf '     境外(失败)  : %s\n' "$(printf '%s' "${NS_CURLV_FOREIGN:-?}" | tr '\n' ' ' | cut -c1-150)"
+printf '     curl 配置   : %s\n' "$(printf '%s' "${NS_CURLRC:-none}" | tr '\n' ' ' | cut -c1-120)"
+printf '     干净环境    : %s\n' "$(printf '%s' "${NS_CURLV_CLEAN:-?}" | tr '\n' ' ' | cut -c1-150)"
+printf '     指定源地址  : %s\n' "$(printf '%s' "${NS_CURLV_BIND:-?}" | tr '\n' ' ' | cut -c1-150)"
 python3 - "$CLASH_JSON" <<'PY'
 import json, sys
 try: d = json.loads(sys.argv[1])
@@ -146,16 +298,59 @@ for h in d.get("hits", [])[:4]:
     print(f"     {h['host'] or h['dest']}:{h['port']} 规则={h['rule'] or '-'} 链路={' → '.join(h['chains']) or '-'}")
 PY
 
+if [[ -n $TCPDUMP_PID ]]; then
+    kill "$TCPDUMP_PID" 2>/dev/null || true
+    wait "$TCPDUMP_PID" 2>/dev/null || true
+    TCPDUMP_PID=""
+    sleep 0.3   # 等它把 pcap 写完
+fi
+if [[ -s $PCAP ]]; then
+    say "④ 抓包分析（$PCAP）"
+    printf '   客户端发出的 SYN      : %s\n' "$(tcpdump -nn -r "$PCAP" 'tcp[tcpflags] & tcp-syn != 0 and src host '"$CLIENT_IP" 2>/dev/null | wc -l)"
+    printf '   回给客户端的 SYN-ACK  : %s\n' "$(tcpdump -nn -r "$PCAP" 'tcp[tcpflags] & (tcp-syn|tcp-ack) == (tcp-syn|tcp-ack) and dst host '"$CLIENT_IP" 2>/dev/null | wc -l)"
+    printf '   RST 报文              : %s\n' "$(tcpdump -nn -r "$PCAP" 'tcp[tcpflags] & tcp-rst != 0' 2>/dev/null | wc -l)"
+    echo "   TCP 会话表（收发双向，packets: A→B / B→A）:"
+    if command -v tshark >/dev/null 2>&1; then
+        tshark -r "$PCAP" -nn -q -z conv,tcp 2>/dev/null | sed -n '2,8p' | sed 's/^/     /'
+    else
+        tcpdump -nn -r "$PCAP" 2>/dev/null | awk '{print $3, $5}' | sort | uniq -c | sort -rn | head -6 | sed 's/^/     /'
+    fi
+fi
+
 echo
-if [[ -n $NS_EXIT && -n $PROXY_EXIT && $NS_EXIT == "$PROXY_EXIT" ]]; then
-    printf '  \033[1;32m✅ 共享接管成功\033[0m：netns 里的流量确实被 eBPF shared 接管并走了代理\n'
-    RC=0
-elif [[ -n $NS_EXIT && $NS_EXIT == "$HOST_DIRECT" ]]; then
-    printf '  \033[1;31m❌ 没被接管\033[0m：netns 出口 = 宿主直连出口，说明流量绕过了 sing-box\n'
-    RC=1
-else
-    printf '  \033[1;33m⚠️ 结论不明\033[0m：netns 出口拿不到（链路/网段/桥的问题）\n'
-    RC=2
+# 判据用 Clash API 的实际链路（比"和本地代理口比出口"更权威，local 关闭时也成立）
+VERDICT="$(python3 - "$CLASH_JSON" <<'PY'
+import json, sys
+try: d = json.loads(sys.argv[1])
+except Exception: d = {}
+hits = d.get("hits", []) or []
+total = d.get("total", 0)
+proxied = [h for h in hits if any("Proxy" in c or "Auto" in c for c in (h.get("chains") or []))]
+direct = [h for h in hits if h.get("chains") == ["direct"]]
+if total == 0:
+    print("none")
+elif proxied:
+    print("proxied")
+elif direct:
+    print("direct")
+else:
+    print("other")
+PY
+)"
+case "$VERDICT" in
+  proxied) printf '  \033[1;32m✅ 共享接管成功（走代理）\033[0m：客户端连接命中 Proxy 链路，抓包双向完整\n'; RC=0 ;;
+  direct)  printf '  \033[1;32m✅ 共享接管成功（走直连）\033[0m：客户端连接被判为 direct\n'; RC=0 ;;
+  none)    printf '  \033[1;31m❌ 没被接管\033[0m：Clash API 里没有来自测试客户端的连接\n'; RC=1 ;;
+  *)       printf '  \033[1;33m⚠️ 部分成功\033[0m：有连接但链路判断异常，看上面的规则/链路明细\n'; RC=2 ;;
+esac
+
+if (( DEBUG_LOG )); then
+    DBG=/tmp/sb-shared-debug.log
+    journalctl -u sing-box --since "-3 min" --no-pager > "$DBG" 2>/dev/null || true
+    say "⑤ debug 日志已存到 $DBG"
+    printf '   与 eBPF/TC/分配相关的行（前 12 条）:\n'
+    grep -iE "ebpf|tc |assign|token|rewrite|shared|packet" "$DBG" | tail -12 | sed 's/.*sing-box\[[0-9]*\]: //' | sed 's/^/     /' || true
+    restore_conf
 fi
 
 if (( KEEP )); then

@@ -1,5 +1,17 @@
 # `pacman -Syy` 大面积失败：诊断与修复
 
+> ## 🕓 历史文档（2026-10-02 追注）
+> **daed 已经不在用了。** 现役透明代理是 **sing-box** —— fork 构建 `sing-box-ebpf 1.14.2.ref1nd-2`，
+> 走 **eBPF**（`local.cgroup` + `shared: packet_rewrite` 挂 `virbr0`），**不是 TUN、更不是 dae**。
+> 实测：`pacman -Q daed dae` → 两个包都**"未找到"**；`systemctl status daed` → **无此 unit**；
+> `tc qdisc show dev wlan0` → 只剩 `noqueue`（**没有** `clsact`，`tc filter show` 为空）→ dae 的
+> eBPF 钩子已清干净；`ip -brief link` 无 `dae0`、`ip netns list` 为空。
+>
+> 所以本文是 **daed 时代的一次故障定位记录**，保留它的价值在于"当时是怎么判的"：
+> 文中的**结论、命令、面板地址（`127.0.0.1:2023`）都已不是现状**。第 2 节的"立刻验证"
+> （`sudo systemctl stop daed`）现在已无从执行 —— 实际的处置是**整体弃用 daed、迁到 sing-box**
+> （见 [08-daed-迁移计划](08-daed-迁移计划.md)，那份计划已执行完毕，文首有待办核对表）。
+
 > 结论：**是 daed（`daed-emo` 1.27.0.r19.gb3043aa）的 DNS 劫持链路在失败**，不是镜像源、也不是 IPv6 单独造成的。
 > 你新配的 emoeem 多代理**是好的** —— 本次 `emoeem 4.0 KiB 100%` 已成功下载。
 
@@ -50,9 +62,9 @@ sudo systemctl start daed    # 验证完再启回来
 4. **让系统别用被劫持的 DNS**（减少影响面）：
 
    ```bash
-   nmcli con mod ChinaNet-14D8_5G ipv4.ignore-auto-dns yes ipv4.dns 223.5.5.5
-   nmcli con mod ChinaNet-14D8_5G ipv6.ignore-auto-dns yes
-   nmcli con up ChinaNet-14D8_5G
+   nmcli con mod <wifi-ssid> ipv4.ignore-auto-dns yes ipv4.dns 223.5.5.5
+   nmcli con mod <wifi-ssid> ipv6.ignore-auto-dns yes
+   nmcli con up <wifi-ssid>
    ```
 
 ## 4. 顺带修 IPv6（独立问题，会叠加放大故障）
@@ -66,7 +78,7 @@ sudo systemctl start daed    # 验证完再启回来
 echo 'precedence ::ffff:0:0/96  100' | sudo tee -a /etc/gai.conf
 
 # 方案 B：直接关掉这张卡的 IPv6
-nmcli con mod ChinaNet-14D8_5G ipv6.method disabled && nmcli con up ChinaNet-14D8_5G
+nmcli con mod <wifi-ssid> ipv6.method disabled && nmcli con up <wifi-ssid>
 ```
 
 ## 5. pacman 侧加固（抗抖动，可选）

@@ -2,7 +2,12 @@
 
 ## `config.sanitized.json` 是什么
 
-本机 `/etc/sing-box/config.json` 在 **2026-10-02 收尾时**的快照，作用是**看懂结构**：
+本机 `/etc/sing-box/config.json` 的脱敏快照，作用是**看懂结构**。
+
+> ✅ **2026-10-02 23:0x 已按现役配置重新生成**，与线上一致：15 份规则集（含 `adblockfilters`）、
+> `inbounds[ebpf].shared = {enabled: true, data_plane: packet_rewrite, interface: ["virbr0"]}`、
+> `local.bypass_rule_set = ["geoip/cn", "geoip/cn-fresh", "cncidr-mihomo"]`。
+> （早先那份 20:03 的快照缺这三项，已替换；配置一改就请重新生成，别让快照落后于线上。）
 
 - 保留：`inbounds` / `outbounds` 的结构与协议字段 / `dns` / `route` / `experimental`，
   以及每个 `rule_set` 的 `path`（**路径本身是最有信息量的部分**：一眼看出哪几份是自建的）；
@@ -20,7 +25,7 @@
 | --- | --- |
 | `inbounds` | **eBPF**：`local`（cgroup 本机接管 + `bypass_rule_set` 让 CN IP 绕过）+ `shared`（`packet_rewrite` on `virbr0`，下游/VM 接管，实测直连与代理均通过）；另有 `mixed`（`127.0.0.1:7892`，给面板/命令行当代理口）+ `ebpf`（本地 cgroup 数据面、`dns_mode: hijack`、`bypass_private_address`、IPv6 开） |
 | `dns` | 7 个 server：1 个 `hosts` 引导 + 4 个 DoH（2 个走代理、2 个走直连）+ **2 个 `group` 故障转移组** |
-| `route` | 14 份规则集 + **11 条规则**（顺序即优先级，见下） |
+| `route` | 15 份规则集 + **11 条规则**（顺序即优先级，见下） |
 | `experimental` | `cache_file`（`store_dns: true`）、`clash_api`（`127.0.0.1:9090`） |
 | `services` | `api`（`127.0.0.1:9091`，官方 dashboard 与 `sing-box api` 命令都走它） |
 
@@ -42,7 +47,7 @@ dns-direct = group[ali, tencent]    ← 国内域名走这里
 
 `type: group` 是**这个 fork 支持、上游 1.14 不支持**的特性，用来把闲置的备用 DNS 编成故障转移组。
 
-## 规则集清单（14 份）
+## 规则集清单（15 份）
 
 | 来源 | tag | 路径 |
 | --- | --- | --- |
@@ -56,13 +61,14 @@ dns-direct = group[ali, tencent]    ← 国内域名走这里
 | 手工放在 `/etc`（早期方案遗留） | `Ads_AWAvenue` | `/etc/sing-box/rule-set/AWAvenue-Ads-Rule.srs` |
 | | `geoip/telegram` | `/etc/sing-box/rule-set/geoip-telegram.srs` |
 
-| 自建的四份 | 是什么 |
+| 自建包的六份 | 是什么 |
 | --- | --- |
 | `anti-ad.srs` | anti-AD 广告/追踪表（AdGuard 语法，构建时用 `sing-box rule-set convert -t adguard` 转） |
 | `geoip/cn-fresh` | MetaCubeX 最新 `geoip/cn`（官方包那份实测**偏旧**：8045 条 vs 9648 条） |
 | `cncidr-mihomo` | mihomo_yamls 的国内 IP 表（第三份独立来源，17958 条） |
-| `must-direct` | 自制两类：① STUN / 游戏主机 / LAN cache / NCSI（走代理会坏功能）② **Steam 国服 CDN** 18 条（`st.dl.eccdnx.com`、`dl.steam.clngaa.com`、`csgo.com.cn`…，直连明显更快）；**刻意不含** `steamcontent.com`/`steamusercontent.com`/`cm.steampowered.com` 等全球域名（强制直连有风险） |
+| `must-direct` | 自制两类：① STUN / 游戏主机 / LAN cache / NCSI（走代理会坏功能）② **Steam 国服 CDN** 18 条（`st.dl.eccdnx.com`、`dl.steam.clngaa.com`、`csgo.com.cn`…，直连明显更快）；**刻意不含** `steamcontent.com`/`steamusercontent.com`/`cm.steampowered.com` 等全球域名（强制直连有风险）。2026-10-02 用 `sing-box rule-set decompile` 实测：`domain_suffix` 24 条 + `domain` 9 条，其中 Steam 国服相关 **正好 18 条** ✅ |
 | `ads-extra` | 自制：`ad.duowan.com` / `sdkmob.com` / `ads.wps.cn`（anti-AD 漏掉的国内广告端点，只用精确域名） |
+| `adblockfilters` | `217heidai/adblockfilters` 聚合广告表（215,248 条 `domain_suffix`，与 anti-AD 只重叠 35%）—— 详见下节 |
 
 **许可**：`geoip/cn-fresh` ← MetaCubeX/meta-rules-dat（GPL-3.0-or-later）；
 `cncidr-mihomo` ← HenryChiao/mihomo_yamls（AGPL-3.0-or-later）；
@@ -80,7 +86,7 @@ dns-direct = group[ali, tencent]    ← 国内域名走这里
 | `geolocation-!cn` | 27,214 vs 官方 23,899（+14%） | 冗余：`route.final = Proxy`，外部域名本来就走代理 |
 | `google-domain` | 885 vs 官方 938 | 冗余：漏掉的 Google 域名也会经 !cn/final 走代理 |
 | `ai` | 222 条 vs 官方 181 条 | 在我列的 34 个 AI 服务域名上，**两边漏的是同一批 10 个** → 没有实际覆盖优势 |
-| `steam-cn` | 22 条：`st.dl.eccdnx.com`、`dl.steam.clngaa.com`、`steamchina.com`… **Steam 国服（完美世界）下载 CDN** | **唯一有价值的一项**（见下） |
+| `steam-cn` | 22 条：`st.dl.eccdnx.com`、`dl.steam.clngaa.com`、`steamchina.com`… **Steam 国服（完美世界）下载 CDN** | **唯一有价值的一项** → ✅ **2026-10-02 已采纳 18 条**（见下） |
 
 ### 为什么"12 倍大的 CN 域名表"是陷阱
 
@@ -92,11 +98,16 @@ dns-direct = group[ali, tencent]    ← 国内域名走这里
 
 结论：**不加**。这也说明"表越大越好"是错觉 —— 得看它和已有规则**是否真的产生不同的判定**。
 
-### Steam 国服值得考虑（待定）
+### Steam 国服值得考虑（✅ 2026-10-02 已采纳）
 
-现在配置里 Steam 全部走代理（实测 `steamstatic.com` / `api.steampowered.com` → Proxy，只有 `lancache.steamcontent.com` 在必须直连清单里）。
+~~现在配置里 Steam 全部走代理（实测 `steamstatic.com` / `api.steampowered.com` → Proxy，只有 `lancache.steamcontent.com` 在必须直连清单里）。
 如果玩国服，把上述 22 个国内 CDN 域名加进 `must-direct`（或单独一份直连清单）会明显加快下载。
-涉及不到 1 KB，随时可以加。
+涉及不到 1 KB，随时可以加。~~
+
+**已执行**：当天把上游 `steam-cn`（22 条）里**剔掉 4 个全球域名**后，**18 条**并入了
+`must-direct`（`sing-box rule-set decompile /usr/share/sing-box-rule-sets/must-direct.srs` 实测：
+Steam 国服相关条目正好 18 条），已随 `sing-box-rule-sets` 包生效（见上表 `must-direct` 行）。
+所以"Steam 全部走代理"这句已经**不再成立**。
 
 ## 广告表的第二层：adblockfilters（2026-10-02 评估）
 
@@ -138,7 +149,7 @@ sudo ./scripts/apply-audit-fixes.sh --with-abf      # 会把它加进 dns 与 ro
 | 2 | `hijack-dns` | 53 端口全部交给 sing-box |
 | 3 | `ip_is_private` → direct | 局域网/内网地址不走代理 |
 | 4 | `must-direct` → direct | **必须放在广告拦截之前**：这些域名既不该被拦也不该走代理 |
-| 5 | 广告四表 → `reject` | 连接层拦广告（浏览器自带 DoH 绕过 DNS 规则时靠这层兜底） |
+| 5 | 广告五表 → `reject` | 连接层拦广告（浏览器自带 DoH 绕过 DNS 规则时靠这层兜底）。**2026-10-02 实测是 5 份**：`geosite/category-ads-all` + `Ads_AWAvenue` + `anti-AD` + `ads-extra` + `adblockfilters` |
 | 6 | `geosite/google` + `category-ai-!cn` → Proxy | 明确要走代理的服务 |
 | 7 | `geosite/apple@cn` → direct | 苹果国内服务直连（否则 App Store 下载会很慢） |
 | 8 | `geosite/cn` → direct | 国内域名 |
@@ -151,7 +162,7 @@ sudo ./scripts/apply-audit-fixes.sh --with-abf      # 会把它加进 dns 与 ro
 ## DNS 侧的广告规则
 
 ```jsonc
-{ "rule_set": ["geosite/category-ads-all", "Ads_AWAvenue", "anti-AD", "ads-extra"],
+{ "rule_set": ["geosite/category-ads-all", "Ads_AWAvenue", "anti-AD", "ads-extra", "adblockfilters"],
   "action": "predefined", "rcode": "NXDOMAIN" }
 ```
 

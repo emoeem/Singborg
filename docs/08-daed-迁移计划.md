@@ -1,5 +1,24 @@
 # 从 daed 迁移：选型结论 + 落地方案（CachyOS / 单 wlan0 / 机场订阅）
 
+> ## 🕓 历史文档 + 待办核对（2026-10-02 追注）
+> 这是 **daed 时代的迁移方案**，已**执行完毕** —— 但最终落地方式与文中不同：**没有用 TUN，用的是 eBPF**
+> （现役 `sing-box-ebpf 1.14.2.ref1nd-2`，`local.cgroup` + `shared: packet_rewrite` 挂 `virbr0`）。
+> 逐条核对本文的待办（2026-10-02 实测）：
+>
+> | 本文的待办 | 现状 | 证据 |
+> |---|---|---|
+> | 停用 / 卸载 daed | ✅ **已完成** | `pacman -Q daed dae` → 两个包都"未找到"；`systemctl status daed` → 无此 unit；`systemctl list-unit-files \| grep -i dae` → 只有 `accounts-daemon` 等同名干扰项 |
+> | 清 `wlan0` 上的 `daed_*` tc 钩子（第 3 节） | ✅ **已完成** | `tc qdisc show dev wlan0` → 只有 `noqueue`（**无 `clsact`**）；`tc filter show dev wlan0 ingress/egress` → 空 |
+> | 删 `dae0` 网卡 / `daens` netns | ✅ **已完成** | `ip -brief link` 只有 `lo/eno1/wlan0/virbr0`，无 `dae0`；`ip netns list` 为空 |
+> | `systemd-resolved` 恢复 | ✅ 正常 | `dig @8.8.8.8 doubleclick.net` → `NXDOMAIN`（被 sing-box 正常劫持，非 SERVFAIL） |
+> | **`/etc/daed` 配置目录** | ⚠️ **仍残留** | `stat /etc/daed` → `drwxr-x--- root:root`，2026-10-01 18:55（本文写作时没把它列进清单；内容是空的旧配置，可安全删除，但**未删**） |
+> | 装 sing-box 并常驻（第 4.2 节） | ✅ **已完成** | `sing-box-ebpf 1.14.2.ref1nd-2`；`sing-box.service` active、`NRestarts=0` |
+> | 用文中那份 **TUN** 配置 / `config.tun-perf.json`（第 4 节） | ❌ **未采用** | 现役配置**没有任何 TUN 入站**，走 eBPF；`~/.config/sing-box/config.tun-perf.json` 只作备份保留 |
+>
+> 另：第 1 节的内核对比表**已过时**两处 —— ① sing-box 现役的是 **reF1nd fork 构建**
+> （`with_ebpf`，上游没有 eBPF 入站）；② 全局接管方式除 TUN / redirect / tproxy 外，fork 还提供 **eBPF**。
+> 第 4.3 节的调优表以 TUN 为前提，**TUN 那几行已不适用**。
+
 ## 0. 一句话结论
 
 > **功能最全 + 性能最强的活跃内核 = `sing-box`。**
@@ -55,7 +74,7 @@
 - 尾随逗号**不是**它没被用起来的原因；真正原因是 **`sing-box` 二进制从来没装**（配置 9 月 21 日生成后原封未动）。
 - 但仍建议清掉，否则编辑器、`jq`、订阅转换脚本会报错。
 
-## 3. 迁移前必做：清掉 dae 的 eBPF 残留 ⚠️
+## 3. 迁移前必做：清掉 dae 的 eBPF 残留 ⚠️（✅ 2026-10-02 实测已清干净）
 
 dae 靠 `tc clsact` + eBPF 挂在网卡上（`wlan0` 上现有 `daed_wan_ingress_l2` / `daed_wan_egress_l2`）。
 **只删包不停服务，钩子会残留，换任何客户端都会继续坏网。**
@@ -127,6 +146,12 @@ curl -s -o /dev/null -w '%{http_code}\n' https://www.google.com
 
 ### 4.3 那几项真正影响性能的设置（我都已验证可用）
 
+> ⚠️ **2026-10-02 追注**：本表以 **TUN** 为前提。现役没有 TUN 入站（走 eBPF），所以
+> **`TUN stack` 与「入站只留 TUN」两行已不适用**；其余四项仍在生效 ——
+> 实测线上 `outbounds[].tcp_fast_open = true`、`rule_set.format = "binary"`、
+> `experimental.cache_file.enabled = true`、`dns.strategy = "prefer_ipv4"`。
+> 而 `mixed:7892` 也**没有**被删掉（仍作为面板/命令行的代理口在用）。
+
 | 设置 | 取值 | 作用 |
 |---|---|---|
 | TUN `stack` | **`system`** | 走内核 TCP/IP 栈，吞吐最高；`gvisor` 最兼容但最慢，`mixed` 折中 |
@@ -148,5 +173,6 @@ XferCommand = /usr/bin/curl -4 -x http://127.0.0.1:7892 --retry 3 --retry-delay 
 ## 5. 三条铁律
 
 1. **永远不要同时开两个透明代理**（daed + FlClash/sing-box 同时 TUN = 之前那种 DNS/TLS 全乱的局面）。
-2. **换客户端前先确认 dae 的 `tc` 钩子已清干净**（第 3 节）。
+2. **换客户端前先确认 dae 的 `tc` 钩子已清干净**（第 3 节）。（✅ 2026-10-02 实测：`wlan0` 上已只剩
+   `noqueue`，`dae0` 与 `daens` 都不存在）⚠️ 但注意：`/etc/daed` 目录**还残留着**（见文首核对表）
 3. **DNS 一律偏 IPv4**：这条线路 IPv6 只有 ULA、没有全局出口，任何 `prefer_ipv6` 都会拖垮体验。

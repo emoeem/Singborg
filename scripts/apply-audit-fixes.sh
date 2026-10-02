@@ -32,6 +32,7 @@ WITH_DIRECT=0
 WITH_EXTRA_ADS=0
 USE_PKG_PATHS=0
 NXDOMAIN_ADS=0
+WITH_ABF=0
 for arg in "$@"; do
   case "$arg" in
     --with-dns-groups)  WITH_DNS_GROUPS=1 ;;
@@ -40,7 +41,8 @@ for arg in "$@"; do
     --with-extra-ads)   WITH_EXTRA_ADS=1 ;; # 补 3 个国内广告端点（ad.duowan.com / sdkmob.com / ads.wps.cn）
     --use-package-paths) USE_PKG_PATHS=1 ;; # 指向 sing-box-rule-sets 包提供的 /usr/share 路径（规则集随 pacman 更新）
     --nxdomain-ads)     NXDOMAIN_ADS=1 ;;   # DNS 广告拦截由 reject(REFUSED) 改为 predefined(NXDOMAIN)：应用立刻失败，不再卡 ~5s
-    *) printf 'FATAL 未知参数：%s（可用：--with-dns-groups --with-cncidr --with-direct-list --with-extra-ads --use-package-paths --nxdomain-ads）\n' "$arg" >&2; exit 1 ;;
+    --with-abf)         WITH_ABF=1 ;;       # 加 adblockfilters 聚合广告表（215k 条域名后缀，与 anti-AD 互补）
+    *) printf 'FATAL 未知参数：%s（可用：--with-dns-groups --with-cncidr --with-direct-list --with-extra-ads --use-package-paths --nxdomain-ads --with-abf）\n' "$arg" >&2; exit 1 ;;
   esac
 done
 
@@ -83,11 +85,12 @@ install -m 644 "$RULESET_SRC/geoip-cn-fresh.srs" "$RULE_DIR/geoip-cn-fresh.srs"
 [[ $WITH_CNCIDR -eq 1 ]] && install -m 644 "$RULESET_SRC/cncidr-mihomo.srs" "$RULE_DIR/cncidr-mihomo.srs" || true
 [[ $WITH_DIRECT -eq 1 ]] && install -m 644 "$RULESET_SRC/must-direct.srs"   "$RULE_DIR/must-direct.srs" || true
 [[ $WITH_EXTRA_ADS -eq 1 ]] && install -m 644 "$RULESET_SRC/ads-extra.srs"  "$RULE_DIR/ads-extra.srs" || true
+[[ $WITH_ABF -eq 1 ]] && install -m 644 "$RULESET_SRC/adblockfilters.srs" "$RULE_DIR/adblockfilters.srs" || true
 fi
 ls -la "$RULE_DIR"/*.srs 2>/dev/null | awk '{print "   ",$5,$9}'
 
 say "③ 生成新配置（内存里改，不落盘）"
-OUT_JSON="$NEW_JSON" RULE_DIR="$RULE_DIR" USE_PKG_PATHS="$USE_PKG_PATHS" NXDOMAIN_ADS="$NXDOMAIN_ADS" \
+OUT_JSON="$NEW_JSON" RULE_DIR="$RULE_DIR" USE_PKG_PATHS="$USE_PKG_PATHS" NXDOMAIN_ADS="$NXDOMAIN_ADS" WITH_ABF="$WITH_ABF" \
 WITH_DNS_GROUPS="$WITH_DNS_GROUPS" WITH_CNCIDR="$WITH_CNCIDR" \
 WITH_DIRECT="$WITH_DIRECT" WITH_EXTRA_ADS="$WITH_EXTRA_ADS" python3 - "$CONF" <<'PY'
 import json, sys, copy
@@ -190,6 +193,18 @@ if __import__("os").environ.get("WITH_DIRECT") == "1":
         rules.insert(idx, {"rule_set": ["must-direct"], "action": "route", "outbound": "direct"})
         report.append(f"插入 must-direct 直连规则（第 {idx + 1} 条）")
 
+# ---- 可选: adblockfilters 聚合广告表（与 anti-AD 互补：实测两边域名重叠仅 35%）----
+if __import__("os").environ.get("WITH_ABF") == "1":
+    if not any(r.get("tag") == "adblockfilters" for r in rs):
+        rs.append({"type": "local", "tag": "adblockfilters", "format": "binary",
+                   "path": f"{RULE_DIR}/adblockfilters.srs"})
+        report.append("route.rule_set += adblockfilters")
+    for container, label in ((dns.get("rules", []), "dns.rules"), (route.get("rules", []), "route.rules")):
+        for r in container:
+            if r.get("action") in ("reject", "predefined") and "adblockfilters" not in r.get("rule_set", []):
+                r["rule_set"] = list(r.get("rule_set", [])) + ["adblockfilters"]
+                report.append(f"{label} 广告规则 += adblockfilters")
+
 # ---- 可选: DNS 广告拦截改用 predefined/NXDOMAIN ----
 # 背景：sing-box 的 DNS `reject` 返回 REFUSED，而 systemd-resolved 不会把 REFUSED 转告客户端
 # （它当成"上游坏了"去重试其他上游），于是走系统解析器的应用每个广告域名要等 ~5s 才失败。
@@ -237,6 +252,9 @@ if __import__("os").environ.get("USE_PKG_PATHS") == "1":
         "cncidr-mihomo": "cncidr-mihomo.srs",
         "must-direct": "must-direct.srs",
         "ads-extra": "ads-extra.srs",
+        # 后加的：忘了把它列进来的话，--use-package-paths 会把这一份漏在 /etc 里，
+        # 于是 pacman 更新规则集时它不会跟着走（实测就是这么漏的）
+        "adblockfilters": "adblockfilters.srs",
     }
     for r in rs:
         t = r.get("tag")

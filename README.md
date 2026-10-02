@@ -36,10 +36,10 @@ sing-box 在一台 Arch/CachyOS 笔记本上落地为「透明代理 + 规则分
 | [04 功能测试报告](docs/04-功能测试报告.md) | 装完之后的功能验收：分流、DNS、DoH、下载、容器 | 换机器重装时照做 |
 | [05 网络审计](docs/05-网络审计.md) | 更早一轮的网络层体检 | 对比 |
 | [06 优化评审](docs/06-优化评审.md) | 前端面板选型、DNS 策略、规则结构的取舍 | 想改架构时 |
-| [07 daed DNS 故障诊断](docs/07-daed-DNS故障诊断.md) | 为什么最后没走 daed（DNS 故障的完整定位过程） | 想试 daed 之前 |
-| [08 daed 迁移计划](docs/08-daed-迁移计划.md) | 那份没执行的迁移方案 | 同上 |
+| [07 daed DNS 故障诊断](docs/07-daed-DNS故障诊断.md) | **历史（daed 时代，daed 已弃用）**：为什么最后没走 daed（DNS 故障的完整定位过程） | 想试 daed 之前 |
+| [08 daed 迁移计划](docs/08-daed-迁移计划.md) | **历史（daed 时代）**：那份迁移方案 —— 已执行完毕，文首有待办核对表 | 同上 |
 | [09 踩坑与经验](docs/09-踩坑与经验.md) | **工程向坑清单**：哪些是 sing-box 的、哪些是内核的、哪些是我自己测错的 | 最推荐先看这个 |
-| [scripts/](scripts/) | 7 个运维脚本 | 直接用 |
+| [scripts/](scripts/) | 11 个运维脚本 | 直接用 |
 | [trial/](trial/) | eBPF A/B 试跑套件（独立状态目录，不动线上） | 想验证 eBPF 是否适合自己 |
 | [config/](config/) | 脱敏后的配置快照 + 规则集清单 | 学配置结构 |
 
@@ -70,9 +70,12 @@ sing-box 在一台 Arch/CachyOS 笔记本上落地为「透明代理 + 规则分
 
 ## 几条最值钱的结论
 
-1. **eBPF 能用，但有硬限制**：本机内核（`7.2.8-1-cachyos-bore-lto`）**不支持 TC 路径的 eBPF**，
-   所以 `local.data_plane: tc` 和 `shared`（`packet_rewrite`）都用不了 → **eBPF 模式下容器/虚拟机覆盖不到**，
-   而 TUN 的 `auto_route` 可以。取舍：要容器/VM 覆盖 → TUN；要分应用 UID 策略 → eBPF。
+1. **eBPF 能用，硬限制只在 `local` 的 TC 数据面**（**2026-10-02 更正** —— 早先「TC / 共享两条都用不了」
+   是未经验证的推断）：本机内核（`7.2.8-1-cachyos-bore-lto`）**不支持 `local.data_plane: tc`**
+   （`register TC eBPF TCP listener: operation not supported`），**但 `shared` 是可用的** ——
+   现役就是 `shared: packet_rewrite` 挂 `virbr0`，`sing-box api ebpf` 实测
+   `role=shared mechanism=tcx` 已 attached。所以 **eBPF 模式下桥接进来的 VM 流量能接管**（VM 实测通过）；
+   真正够不到的是 rootless pasta 容器（见第 5 条）。取舍：要分应用 UID 策略 → eBPF。
 2. **`--mode local` 预检全绿 ≠ 能用**：它只覆盖 cgroup 路径；`tc`/`shared` 属于 `--mode all`
    （结果是 `inconclusive`，36 项 unknown）→ **只有实跑才知道**。
 3. **DNS 广告拦截别用 `reject`**：sing-box 的 `reject` 回 REFUSED，而 `systemd-resolved` **不把它转告客户端**
