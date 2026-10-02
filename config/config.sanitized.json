@@ -1,0 +1,625 @@
+{
+  "$schema": "https://sing-box.sagernet.org/schema.json",
+  "log": {
+    "disabled": false,
+    "level": "warn",
+    "timestamp": true
+  },
+  "experimental": {
+    "cache_file": {
+      "enabled": true,
+      "path": "/var/lib/sing-box/cache.db",
+      "store_fakeip": false,
+      "store_dns": true
+    },
+    "clash_api": {
+      "external_controller": "127.0.0.1:9090",
+      "secret": "<clash-api-secret>",
+      "default_mode": "Rule",
+      "access_control_allow_origin": [
+        "*"
+      ],
+      "access_control_allow_private_network": true
+    }
+  },
+  "dns": {
+    "servers": [
+      {
+        "type": "hosts",
+        "tag": "hosts-bootstrap",
+        "predefined": {
+          "dns.alidns.com": [
+            "223.5.5.5",
+            "223.6.6.6"
+          ],
+          "doh.pub": [
+            "120.53.53.53",
+            "1.12.12.12"
+          ]
+        }
+      },
+      {
+        "type": "https",
+        "tag": "dns-proxy-cf",
+        "server": "1.1.1.1",
+        "server_port": 443,
+        "path": "/dns-query",
+        "tls": {
+          "enabled": true,
+          "server_name": "cloudflare-dns.com"
+        },
+        "detour": "Auto"
+      },
+      {
+        "type": "https",
+        "tag": "dns-proxy-google",
+        "server": "8.8.8.8",
+        "server_port": 443,
+        "path": "/dns-query",
+        "tls": {
+          "enabled": true,
+          "server_name": "dns.google"
+        },
+        "detour": "Auto"
+      },
+      {
+        "type": "https",
+        "tag": "dns-direct-ali",
+        "server": "dns.alidns.com",
+        "domain_resolver": "hosts-bootstrap"
+      },
+      {
+        "type": "https",
+        "tag": "dns-direct-tencent",
+        "server": "doh.pub",
+        "domain_resolver": "hosts-bootstrap"
+      },
+      {
+        "type": "group",
+        "tag": "dns-proxy",
+        "servers": [
+          "dns-proxy-cf",
+          "dns-proxy-google"
+        ]
+      },
+      {
+        "type": "group",
+        "tag": "dns-direct",
+        "servers": [
+          "dns-direct-ali",
+          "dns-direct-tencent"
+        ]
+      }
+    ],
+    "rules": [
+      {
+        "rule_set": [
+          "geosite/category-ads-all",
+          "Ads_AWAvenue",
+          "anti-AD",
+          "ads-extra"
+        ],
+        "action": "predefined",
+        "rcode": "NXDOMAIN"
+      },
+      {
+        "rule_set": [
+          "geosite/apple@cn"
+        ],
+        "action": "route",
+        "server": "dns-direct"
+      },
+      {
+        "rule_set": [
+          "geosite/cn"
+        ],
+        "action": "route",
+        "server": "dns-direct"
+      },
+      {
+        "rule_set": [
+          "geosite/google",
+          "geosite/category-ai-!cn"
+        ],
+        "action": "route",
+        "server": "dns-proxy"
+      },
+      {
+        "rule_set": [
+          "geosite/geolocation-!cn"
+        ],
+        "action": "route",
+        "server": "dns-proxy"
+      }
+    ],
+    "final": "dns-proxy",
+    "strategy": "prefer_ipv4",
+    "cache_capacity": 8192,
+    "optimistic": {
+      "enabled": true,
+      "timeout": "3d"
+    },
+    "reverse_mapping": true,
+    "timeout": "10s"
+  },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 7892,
+      "set_system_proxy": false
+    },
+    {
+      "type": "ebpf",
+      "tag": "ebpf-in",
+      "network": [
+        "tcp",
+        "udp"
+      ],
+      "local": {
+        "enabled": true,
+        "data_plane": "cgroup",
+        "dns_mode": "hijack",
+        "bypass_private_address": true,
+        "ipv6": true
+      },
+      "shared": {
+        "enabled": false
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "block",
+      "tag": "block"
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "🇭🇰 香港Z01",
+      "server": "<node-server>",
+      "server_port": 0,
+      "method": "aes-256-gcm",
+      "password": "<password>",
+      "udp_over_tcp": false,
+      "tcp_fast_open": true,
+      "domain_resolver": "dns-direct-ali"
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "🇯🇵 日本Z01 | IEPL",
+      "server": "<node-server>",
+      "server_port": 0,
+      "method": "aes-256-gcm",
+      "password": "<password>",
+      "udp_over_tcp": false,
+      "tcp_fast_open": true,
+      "domain_resolver": "dns-direct-ali"
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "🇭🇰 香港Z02 | IEPL",
+      "server": "<node-server>",
+      "server_port": 0,
+      "method": "aes-256-gcm",
+      "password": "<password>",
+      "tcp_fast_open": true,
+      "domain_resolver": "dns-direct-ali"
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "🇯🇵 日本Z02 | IEPL",
+      "server": "<node-server>",
+      "server_port": 0,
+      "method": "aes-256-gcm",
+      "password": "<password>",
+      "tcp_fast_open": true,
+      "domain_resolver": "dns-direct-ali"
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "🇭🇰 香港Z03 | IEPL",
+      "server": "<node-server>",
+      "server_port": 0,
+      "method": "aes-256-gcm",
+      "password": "<password>",
+      "tcp_fast_open": true,
+      "domain_resolver": "dns-direct-ali"
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "🇯🇵 日本Z03 | IEPL",
+      "server": "<node-server>",
+      "server_port": 0,
+      "method": "aes-256-gcm",
+      "password": "<password>",
+      "tcp_fast_open": true,
+      "domain_resolver": "dns-direct-ali"
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "🇭🇰 香港Z04 | IEPL",
+      "server": "<node-server>",
+      "server_port": 0,
+      "method": "aes-256-gcm",
+      "password": "<password>",
+      "tcp_fast_open": true,
+      "domain_resolver": "dns-direct-ali"
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "🇯🇵 日本Z04 | IEPL",
+      "server": "<node-server>",
+      "server_port": 0,
+      "method": "aes-256-gcm",
+      "password": "<password>",
+      "tcp_fast_open": true,
+      "domain_resolver": "dns-direct-ali"
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "🇯🇵 日本Z05 | 下载专用",
+      "server": "<node-server>",
+      "server_port": 0,
+      "method": "aes-256-gcm",
+      "password": "<password>",
+      "tcp_fast_open": true,
+      "domain_resolver": "dns-direct-ali"
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "🇸🇬 新加坡Z01 | IEPL",
+      "server": "<node-server>",
+      "server_port": 0,
+      "method": "aes-256-gcm",
+      "password": "<password>",
+      "tcp_fast_open": true,
+      "domain_resolver": "dns-direct-ali"
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "🇸🇬 新加坡Z02 | IEPL",
+      "server": "<node-server>",
+      "server_port": 0,
+      "method": "aes-256-gcm",
+      "password": "<password>",
+      "tcp_fast_open": true,
+      "domain_resolver": "dns-direct-ali"
+    },
+    {
+      "type": "selector",
+      "tag": "Proxy",
+      "outbounds": [
+        "Auto",
+        "🇯🇵 日本Z01 | IEPL",
+        "🇯🇵 日本Z02 | IEPL",
+        "🇯🇵 日本Z03 | IEPL",
+        "🇯🇵 日本Z04 | IEPL",
+        "🇯🇵 日本Z05 | 下载专用",
+        "🇭🇰 香港Z01",
+        "🇭🇰 香港Z02 | IEPL",
+        "🇭🇰 香港Z03 | IEPL",
+        "🇭🇰 香港Z04 | IEPL",
+        "🇸🇬 新加坡Z01 | IEPL",
+        "🇸🇬 新加坡Z02 | IEPL",
+        "direct",
+        "Japan",
+        "HongKong",
+        "Singapore",
+        "Download"
+      ],
+      "default": "Auto",
+      "interrupt_exist_connections": false
+    },
+    {
+      "type": "urltest",
+      "tag": "Auto",
+      "outbounds": [
+        "🇯🇵 日本Z01 | IEPL",
+        "🇯🇵 日本Z02 | IEPL",
+        "🇯🇵 日本Z03 | IEPL",
+        "🇯🇵 日本Z04 | IEPL",
+        "🇯🇵 日本Z05 | 下载专用",
+        "🇭🇰 香港Z01",
+        "🇭🇰 香港Z02 | IEPL",
+        "🇭🇰 香港Z03 | IEPL",
+        "🇭🇰 香港Z04 | IEPL",
+        "🇸🇬 新加坡Z01 | IEPL",
+        "🇸🇬 新加坡Z02 | IEPL"
+      ],
+      "url": "https://www.gstatic.com/generate_204",
+      "interval": "5m",
+      "tolerance": 150,
+      "idle_timeout": "30m",
+      "interrupt_exist_connections": false
+    },
+    {
+      "type": "selector",
+      "tag": "Japan",
+      "outbounds": [
+        "Auto-Japan",
+        "🇯🇵 日本Z01 | IEPL",
+        "🇯🇵 日本Z02 | IEPL",
+        "🇯🇵 日本Z03 | IEPL",
+        "🇯🇵 日本Z04 | IEPL",
+        "🇯🇵 日本Z05 | 下载专用"
+      ],
+      "default": "Auto-Japan"
+    },
+    {
+      "type": "selector",
+      "tag": "HongKong",
+      "outbounds": [
+        "Auto-HongKong",
+        "🇭🇰 香港Z01",
+        "🇭🇰 香港Z02 | IEPL",
+        "🇭🇰 香港Z03 | IEPL",
+        "🇭🇰 香港Z04 | IEPL"
+      ],
+      "default": "Auto-HongKong"
+    },
+    {
+      "type": "selector",
+      "tag": "Singapore",
+      "outbounds": [
+        "Auto-Singapore",
+        "🇸🇬 新加坡Z01 | IEPL",
+        "🇸🇬 新加坡Z02 | IEPL"
+      ],
+      "default": "Auto-Singapore"
+    },
+    {
+      "type": "urltest",
+      "tag": "Auto-Japan",
+      "outbounds": [
+        "🇯🇵 日本Z01 | IEPL",
+        "🇯🇵 日本Z02 | IEPL",
+        "🇯🇵 日本Z03 | IEPL",
+        "🇯🇵 日本Z04 | IEPL",
+        "🇯🇵 日本Z05 | 下载专用"
+      ],
+      "url": "https://www.gstatic.com/generate_204",
+      "interval": "5m",
+      "tolerance": 50,
+      "idle_timeout": "30m"
+    },
+    {
+      "type": "urltest",
+      "tag": "Auto-HongKong",
+      "outbounds": [
+        "🇭🇰 香港Z01",
+        "🇭🇰 香港Z02 | IEPL",
+        "🇭🇰 香港Z03 | IEPL",
+        "🇭🇰 香港Z04 | IEPL"
+      ],
+      "url": "https://www.gstatic.com/generate_204",
+      "interval": "5m",
+      "tolerance": 50,
+      "idle_timeout": "30m"
+    },
+    {
+      "type": "urltest",
+      "tag": "Auto-Singapore",
+      "outbounds": [
+        "🇸🇬 新加坡Z01 | IEPL",
+        "🇸🇬 新加坡Z02 | IEPL"
+      ],
+      "url": "https://www.gstatic.com/generate_204",
+      "interval": "5m",
+      "tolerance": 50,
+      "idle_timeout": "30m"
+    },
+    {
+      "type": "selector",
+      "tag": "Download",
+      "outbounds": [
+        "🇯🇵 日本Z05 | 下载专用",
+        "Auto"
+      ],
+      "default": "🇯🇵 日本Z05 | 下载专用"
+    }
+  ],
+  "route": {
+    "rule_set": [
+      {
+        "type": "local",
+        "tag": "geosite/category-ads-all",
+        "format": "binary",
+        "path": "/usr/share/sing-box/rule-set/geosite-category-ads-all.srs"
+      },
+      {
+        "type": "local",
+        "tag": "geosite/cn",
+        "format": "binary",
+        "path": "/usr/share/sing-box/rule-set/geosite-cn.srs"
+      },
+      {
+        "type": "local",
+        "tag": "geosite/geolocation-!cn",
+        "format": "binary",
+        "path": "/usr/share/sing-box/rule-set/geosite-geolocation-!cn.srs"
+      },
+      {
+        "type": "local",
+        "tag": "geosite/google",
+        "format": "binary",
+        "path": "/usr/share/sing-box/rule-set/geosite-google.srs"
+      },
+      {
+        "type": "local",
+        "tag": "geosite/category-ai-!cn",
+        "format": "binary",
+        "path": "/usr/share/sing-box/rule-set/geosite-category-ai-!cn.srs"
+      },
+      {
+        "type": "local",
+        "tag": "geoip/cn",
+        "format": "binary",
+        "path": "/usr/share/sing-box/rule-set/geoip-cn.srs"
+      },
+      {
+        "type": "local",
+        "tag": "geoip/telegram",
+        "format": "binary",
+        "path": "/etc/sing-box/rule-set/geoip-telegram.srs"
+      },
+      {
+        "type": "local",
+        "tag": "geosite/apple@cn",
+        "format": "binary",
+        "path": "/usr/share/sing-box/rule-set/geosite-apple@cn.srs"
+      },
+      {
+        "type": "local",
+        "tag": [
+          "Ads_AWAvenue"
+        ],
+        "format": "binary",
+        "path": "/etc/sing-box/rule-set/AWAvenue-Ads-Rule.srs"
+      },
+      {
+        "type": "local",
+        "tag": "anti-AD",
+        "format": "binary",
+        "path": "/usr/share/sing-box-rule-sets/anti-ad.srs"
+      },
+      {
+        "type": "local",
+        "tag": "geoip/cn-fresh",
+        "format": "binary",
+        "path": "/usr/share/sing-box-rule-sets/geoip-cn-fresh.srs"
+      },
+      {
+        "type": "local",
+        "tag": "cncidr-mihomo",
+        "format": "binary",
+        "path": "/usr/share/sing-box-rule-sets/cncidr-mihomo.srs"
+      },
+      {
+        "type": "local",
+        "tag": "must-direct",
+        "format": "binary",
+        "path": "/usr/share/sing-box-rule-sets/must-direct.srs"
+      },
+      {
+        "type": "local",
+        "tag": "ads-extra",
+        "format": "binary",
+        "path": "/usr/share/sing-box-rule-sets/ads-extra.srs"
+      }
+    ],
+    "rules": [
+      {
+        "action": "sniff",
+        "timeout": "300ms"
+      },
+      {
+        "type": "logical",
+        "mode": "or",
+        "rules": [
+          {
+            "port": 53
+          },
+          {
+            "protocol": "dns"
+          }
+        ],
+        "action": "hijack-dns"
+      },
+      {
+        "ip_is_private": true,
+        "action": "route",
+        "outbound": "direct"
+      },
+      {
+        "rule_set": [
+          "must-direct"
+        ],
+        "action": "route",
+        "outbound": "direct"
+      },
+      {
+        "rule_set": [
+          "geosite/category-ads-all",
+          "Ads_AWAvenue",
+          "anti-AD",
+          "ads-extra"
+        ],
+        "action": "reject"
+      },
+      {
+        "rule_set": [
+          "geosite/google",
+          "geosite/category-ai-!cn"
+        ],
+        "action": "route",
+        "outbound": "Proxy"
+      },
+      {
+        "rule_set": [
+          "geosite/apple@cn"
+        ],
+        "action": "route",
+        "outbound": "direct"
+      },
+      {
+        "rule_set": [
+          "geosite/cn"
+        ],
+        "action": "route",
+        "outbound": "direct"
+      },
+      {
+        "rule_set": [
+          "geosite/geolocation-!cn"
+        ],
+        "action": "route",
+        "outbound": "Proxy"
+      },
+      {
+        "rule_set": [
+          "geoip/telegram"
+        ],
+        "action": "route",
+        "outbound": "Proxy"
+      },
+      {
+        "rule_set": [
+          "geoip/cn",
+          "geoip/cn-fresh",
+          "cncidr-mihomo"
+        ],
+        "action": "route",
+        "outbound": "direct"
+      }
+    ],
+    "auto_detect_interface": true,
+    "find_process": false,
+    "default_domain_resolver": "dns-direct",
+    "default_http_client": "proxy-rules",
+    "final": "Proxy"
+  },
+  "http_clients": [
+    {
+      "tag": "proxy-rules",
+      "detour": "Auto"
+    }
+  ],
+  "services": [
+    {
+      "type": "api",
+      "listen": "127.0.0.1",
+      "listen_port": 9091,
+      "secret": "<clash-api-secret>",
+      "dashboard": {
+        "enabled": true,
+        "path": "/var/lib/sing-box/dashboard",
+        "http_client": "proxy-rules"
+      }
+    }
+  ]
+}
