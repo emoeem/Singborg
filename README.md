@@ -17,7 +17,7 @@ sing-box 在一台 Arch/CachyOS 笔记本上落地为「透明代理 + 规则分
 
 | 项 | 值 |
 | --- | --- |
-| 接管方式 | **eBPF**（`local.cgroup` 数据面，内核 socket 层接管本机流量） |
+| 接管方式 | **eBPF**（`local.cgroup` 数据面；shared 两条数据面实测也通过 → 容器/VM 可接管） |
 | 分流 | 国内直连 · 海外走代理（机场节点，`Proxy → Auto` URLTest 自动选优） |
 | DNS | 53 端口全部劫持，无泄露；DoH 出口在代理侧；国内域名走阿里/腾讯 DoH |
 | 广告拦截 | 24/26 个测试端点被拦（DNS `predefined/NXDOMAIN` + 连接层 `reject` 双保险） |
@@ -64,6 +64,8 @@ sing-box 在一台 Arch/CachyOS 笔记本上落地为「透明代理 + 规则分
 - `12:2x` 把这套脚本集成进 [`toolbox-hub`](https://github.com/emoeem/toolbox-hub) 的 TUI（5 个内置动作）
 - `12:3x` 复查日志：当前进程零告警；发现一个**订阅节点已死**（`Download` 组钉在它上面，但没有规则引用它）
 - `12:5x` 新增排查工具 `sing-box-why`（域名/IP → 为什么被拦 / 走哪条规则 / 出口在哪 / 怎么放行）
+- `13:0x` **更正**：以 root 逐条探测四条数据面 → shared `packet_rewrite` / `socket_assign` **都通过**（此前「shared 不可用」是未经验证的推断）
+- `13:0x` 量化 `bypass_rule_set`：抽样 150 个走代理的域名只有 **0.8%** 解析到 CN IP（会被改成直连）→ 近乎纯收益；顺手把 18 条 Steam 国服 CDN 加进必须直连清单
 - `12:4x` 评估 [`217heidai/adblockfilters`](https://github.com/217heidai/adblockfilters)：与 anti-AD **只重叠 35%**、独有 13.9 万条域名，对照组 0 误伤 → 作为第二层广告表加进规则集包（`--with-abf` 启用）
 
 ## 几条最值钱的结论

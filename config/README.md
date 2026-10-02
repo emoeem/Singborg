@@ -61,7 +61,7 @@ dns-direct = group[ali, tencent]    ← 国内域名走这里
 | `anti-ad.srs` | anti-AD 广告/追踪表（AdGuard 语法，构建时用 `sing-box rule-set convert -t adguard` 转） |
 | `geoip/cn-fresh` | MetaCubeX 最新 `geoip/cn`（官方包那份实测**偏旧**：8045 条 vs 9648 条） |
 | `cncidr-mihomo` | mihomo_yamls 的国内 IP 表（第三份独立来源，17958 条） |
-| `must-direct` | 自制：STUN / 游戏主机 / LAN cache / NCSI（**走代理会坏功能**：NAT 类型、Steam 局域网缓存） |
+| `must-direct` | 自制两类：① STUN / 游戏主机 / LAN cache / NCSI（走代理会坏功能）② **Steam 国服 CDN** 18 条（`st.dl.eccdnx.com`、`dl.steam.clngaa.com`、`csgo.com.cn`…，直连明显更快）；**刻意不含** `steamcontent.com`/`steamusercontent.com`/`cm.steampowered.com` 等全球域名（强制直连有风险） |
 | `ads-extra` | 自制：`ad.duowan.com` / `sdkmob.com` / `ads.wps.cn`（anti-AD 漏掉的国内广告端点，只用精确域名） |
 
 **许可**：`geoip/cn-fresh` ← MetaCubeX/meta-rules-dat（GPL-3.0-or-later）；
