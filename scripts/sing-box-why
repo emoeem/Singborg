@@ -48,7 +48,8 @@ if [[ -t 1 ]]; then
 else
     C_DIM=""; C_OK=""; C_BAD=""; C_WARN=""; C_KEY=""; C_OFF=""
 fi
-line() { printf '  %-9s %s\n' "$1" "$2" 2>/dev/null || true; }
+line() { (( JSON_OUT )) && return 0; printf '  %-9s %s\n' "$1" "$2" 2>/dev/null || true; }
+say() { (( JSON_OUT )) && return 0; printf '%s\n' "$1" 2>/dev/null || true; }
 
 SECRET="$(jq -r '.experimental.clash_api.secret // ""' "$CONF" 2>/dev/null || echo '')"
 CACHE_DIR="$(mktemp -d /tmp/sing-box-why.XXXXXX)"
@@ -154,8 +155,8 @@ PYEOF
 }
 
 # ── 主流程 ────────────────────────────────────────────────────────────────────
-printf '\n%s sing-box 排查%s  %s\n' "$C_DIM" "$C_OFF" "$TARGET" 2>/dev/null || true
-printf '%s──────────────────────────────────────────────────────────%s\n' "$C_DIM" "$C_OFF" 2>/dev/null || true
+say "$(printf '\n%s sing-box 排查%s  %s' "$C_DIM" "$C_OFF" "$TARGET")"
+say "$(printf '%s──────────────────────────────────────────────────────────%s' "$C_DIM" "$C_OFF")" 
 
 IS_IP=0
 python3 -c "import ipaddress,sys; ipaddress.ip_address(sys.argv[1])" "$TARGET" 2>/dev/null && IS_IP=1
@@ -262,7 +263,7 @@ if (( JSON_OUT == 1 )); then
 else
     if [[ -n $BLOCKED_AT ]]; then
         line 放行 "$SUGGEST"
-        printf '\n  %s提示：也可在面板/ zashboard 里临时放行；若确认是上游规则错了，向规则集上游反馈。%s\n' "$C_DIM" "$C_OFF"
+        say "$(printf '  %s提示：也可在面板/ zashboard 里临时放行；若确认是上游规则错了，向规则集上游反馈。%s' "$C_DIM" "$C_OFF")"
     fi
     printf '%s──────────────────────────────────────────────────────────%s\n\n' "$C_DIM" "$C_OFF" 2>/dev/null || true
 fi
