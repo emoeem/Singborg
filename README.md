@@ -63,6 +63,7 @@ sing-box 在一台 Arch/CachyOS 笔记本上落地为「透明代理 + 规则分
 - `11:0x` 新增 `sing-box-rule-sets` 包 + **每日自动比对上游 sha256** 的工作流
 - `12:2x` 把这套脚本集成进 [`toolbox-hub`](https://github.com/emoeem/toolbox-hub) 的 TUI（5 个内置动作）
 - `12:3x` 复查日志：当前进程零告警；发现一个**订阅节点已死**（`Download` 组钉在它上面，但没有规则引用它）
+- `12:5x` 新增排查工具 `sing-box-why`（域名/IP → 为什么被拦 / 走哪条规则 / 出口在哪 / 怎么放行）
 - `12:4x` 评估 [`217heidai/adblockfilters`](https://github.com/217heidai/adblockfilters)：与 anti-AD **只重叠 35%**、独有 13.9 万条域名，对照组 0 误伤 → 作为第二层广告表加进规则集包（`--with-abf` 启用）
 
 ## 几条最值钱的结论

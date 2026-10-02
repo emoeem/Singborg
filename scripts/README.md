@@ -12,6 +12,8 @@
 
 | 脚本 | 干什么 | 要 root |
 | --- | --- | --- |
+| `sing-box-why` | 查一个域名/IP：**为什么被拦 / 走哪条规则 / 从哪个出口出去**，被拦时直接给出放行片段 | ❌（只读） |
+| `sing-box-status` | 一屏体检：模式 / 入站 / 出口 / 分流 / DNS / 规则集 / 备份 | ❌（只读） |
 | `apply-audit-fixes.sh` | 审计修复：补 anti-AD 广告表、刷新 geoip/cn、清理冗余规则与 `dns-local`。6 个可选开关见下 | ✅ |
 | `switch-to-ebpf.sh` | TUN → eBPF。可选 `--data-plane cgroup\|tc`、`--shared <接口>`；`--force` 越过 TC 守卫 | ✅ |
 | `switch-to-tun.sh` | eBPF → TUN（TUN 用 `auto_route` 覆盖转发流量，**容器/虚拟机也能被代理**）。TUN 定义取自最近的 `pre-backup` | ✅ |
@@ -45,6 +47,14 @@ DNS 那项一律用**随机子域**（`<hex>.doubleclick.net`）并问一个对�
 否则 `systemd-resolved` 的缓存会把"没生效"伪造成"生效"（我第一次切 eBPF 就是这么被骗着回滚的）。
 
 ## 注意
+
+### `sing-box-why` 是怎么工作的（值得记）
+
+- 没被拦的域名：连一次真实连接，从 **Clash API 读实际命中的 `rule` / `rulePayload` / `chains`** —— 这是权威结果，不是猜的。
+- 被 DNS 拦下的域名：**不会产生连接记录**，所以退一步逐个规则集判定命中哪一个；AdGuard 来源的 `.srs` 无法反编译，会**如实标注"无法判定"**而不是硬猜。
+- 抽样踩到的坑：直连时 `metadata.host` 常为空、`dig` 默认只查 A 而系统可能走 IPv6、
+  sniff 到的可能是 CNAME 目标（`www.baidu.com` → `www.a.shifen.com`）。
+  所以最后是**先解析、再连指定 IP、但保留 SNI** —— 目的 IP 确定、分流仍按原域名判。
 
 - 这套脚本在 [`emoeem/toolbox-hub`](https://github.com/emoeem/toolbox-hub) 里也有一份
   （多了注解头与自提权前导，用来当 TUI 动作）。两边的**业务逻辑应当保持一致**，改的时候一起改。
