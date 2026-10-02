@@ -51,6 +51,7 @@ dns-direct = group[ali, tencent]    ← 国内域名走这里
 | | `cncidr-mihomo` | `/usr/share/sing-box-rule-sets/cncidr-mihomo.srs` |
 | | `must-direct` | `/usr/share/sing-box-rule-sets/must-direct.srs` |
 | | `ads-extra` | `/usr/share/sing-box-rule-sets/ads-extra.srs` |
+| | `adblockfilters` | `/usr/share/sing-box-rule-sets/adblockfilters.srs`（215248 条域名后缀，`--with-abf` 启用） |
 | 官方 `sing-geosite/sing-geoip` 包 | `geosite/category-ads-all` `geosite/cn` `geosite/geolocation-!cn` `geosite/google` `geosite/category-ai-!cn` `geoip/cn` `geosite/apple@cn` | `/usr/share/sing-box/rule-set/…` |
 | 手工放在 `/etc`（早期方案遗留） | `Ads_AWAvenue` | `/etc/sing-box/rule-set/AWAvenue-Ads-Rule.srs` |
 | | `geoip/telegram` | `/etc/sing-box/rule-set/geoip-telegram.srs` |
@@ -66,6 +67,38 @@ dns-direct = group[ali, tencent]    ← 国内域名走这里
 **许可**：`geoip/cn-fresh` ← MetaCubeX/meta-rules-dat（GPL-3.0-or-later）；
 `cncidr-mihomo` ← HenryChiao/mihomo_yamls（AGPL-3.0-or-later）；
 `anti-AD` ← prprpi/anti-AD（上游未附许可证文件，个人使用）；其余自制。
+
+## 广告表的第二层：adblockfilters（2026-10-02 评估）
+
+[`217heidai/adblockfilters`](https://github.com/217heidai/adblockfilters)（7.6k stars，GPL-3.0，**每 8 小时**更新）
+是个聚合器：EasyList / EasyPrivacy / AdGuard Base+Chinese+Mobile+DNS / AdRules / OISD /
+DNS-Blocklists PRO / StevenBlack / AWAvenue… 合并去重后，还会**先用 3+3 组 DNS 验证上游域名是否还有效**，
+去掉失效的；并且**直接提供 sing-box 1.12+ 的 `.srs`**（不用自己转）。
+
+实测评估（拿它的 JSON 版做精确 `domain_suffix` 匹配，`anti-AD` 用线上 `dig` 实测）：
+
+| | 域名规则数 |
+| --- | --- |
+| anti-AD | 99,395 |
+| adblockfilters | 215,248 |
+| 两边都有 | 75,383（**只重叠 35%**） |
+| 只有 adblockfilters 有 | **139,865** |
+| 只有 anti-AD 有 | 24,012 |
+| 并集 | 239,260（相对现在 **+141%**） |
+
+- **不替换 anti-AD**：它独有的 24,012 条里有一批国内广告 SDK 域名（`anti-AD` 在这块更强）。
+- **误伤检查**：27 个常用域名（google / github / baidu / bilibili / qq / taobao / zhihu / 微信 /
+  apple / microsoft / steam / cloudflare / wikipedia / youtube / x / telegram / jd / 美团 / 抖音 /
+  小米 / 华为 / 阿里云 / 头条 / 爱奇艺 / 优酷 / raw.githubusercontent / api.github）**0 命中**。
+- **Lite 版不要用**：只有 5306 条（仅国内域名），实测在 26 个广告端点上只覆盖 3 个。
+- 兼容性：`.srs` 用 `sing-box check` 实测可直接加载（1.14.2-reF1nd），`decompile` 出 215,248 条 `domain_suffix`。
+- 代价：规则集文件 1.76 MB（anti-AD 是 0.77 MB），内存会多占一些 —— 值不值得看你怎么用。
+
+启用（包已带上，配置里加一段）：
+
+```bash
+sudo ./scripts/apply-audit-fixes.sh --with-abf      # 会把它加进 dns 与 route 两条 reject 规则
+```
 
 ## 路由规则顺序（11 条，顺序就是优先级）
 

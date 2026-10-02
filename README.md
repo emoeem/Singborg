@@ -21,7 +21,7 @@ sing-box 在一台 Arch/CachyOS 笔记本上落地为「透明代理 + 规则分
 | 分流 | 国内直连 · 海外走代理（机场节点，`Proxy → Auto` URLTest 自动选优） |
 | DNS | 53 端口全部劫持，无泄露；DoH 出口在代理侧；国内域名走阿里/腾讯 DoH |
 | 广告拦截 | 24/26 个测试端点被拦（DNS `predefined/NXDOMAIN` + 连接层 `reject` 双保险） |
-| 规则集 | 14 份（5 份来自自建包 `/usr/share/sing-box-rule-sets`，随 pacman 更新） |
+| 规则集 | 15 份（6 份来自自建包 `/usr/share/sing-box-rule-sets`，随 pacman 更新） |
 | 面板 | 自研 `sing-box-panel`（127.0.0.1:9096，内嵌 zashboard）+ 官方 dashboard（:9091） |
 | 日志 | 当前进程 **零告警零错误**；`NRestarts=0`、无 OOM |
 | 自建仓库 | `sing-box-ebpf`（reF1nd 分支 + `with_ebpf`）、`sing-box-panel`、`sing-box-rule-sets` |
@@ -63,6 +63,7 @@ sing-box 在一台 Arch/CachyOS 笔记本上落地为「透明代理 + 规则分
 - `11:0x` 新增 `sing-box-rule-sets` 包 + **每日自动比对上游 sha256** 的工作流
 - `12:2x` 把这套脚本集成进 [`toolbox-hub`](https://github.com/emoeem/toolbox-hub) 的 TUI（5 个内置动作）
 - `12:3x` 复查日志：当前进程零告警；发现一个**订阅节点已死**（`Download` 组钉在它上面，但没有规则引用它）
+- `12:4x` 评估 [`217heidai/adblockfilters`](https://github.com/217heidai/adblockfilters)：与 anti-AD **只重叠 35%**、独有 13.9 万条域名，对照组 0 误伤 → 作为第二层广告表加进规则集包（`--with-abf` 启用）
 
 ## 几条最值钱的结论
 
