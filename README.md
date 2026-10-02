@@ -79,8 +79,10 @@ sing-box 在一台 Arch/CachyOS 笔记本上落地为「透明代理 + 规则分
    （当成"上游坏了"去重试），应用每个广告域名要等约 5 秒。改 `predefined` + `rcode: NXDOMAIN` 后秒失败。
 4. **域名规则优先于 IP 规则**：一个 `geosite/cn` 域名解析到 Google 的 IP 时，它**照样走直连**（所以会超时）——
    这是设计，不是 bug。
-5. **rootless 容器（pasta）天然抓不到**：pasta 把容器数据包 splice 进宿主网络栈、**不创建宿主 socket**，
-   cgroup 钩子看不见 → 容器要么 `--network=host`，要么切回 TUN。
+5. **rootless 容器（pasta）在 eBPF 下走不了代理** —— 但原因**不是**「pasta 不创建宿主 socket」
+   （实测 `ss -tnp` 能看到 `passt.avx2` 的 ESTAB socket，这句旧解释已被推翻）。现象是：
+   容器内 DNS 拦截 ✅、国内直连 ✅、**境外失败** ❌。`shared` 能接管的是**桥接进来的包**（VM 实测通过），
+   pasta 属用户态转发，不在覆盖范围内。处置：`--network=host`，或切回 TUN。详见 `docs/09` §6。
 
 ## 相关仓库
 
