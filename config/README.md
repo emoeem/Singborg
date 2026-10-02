@@ -18,7 +18,7 @@
 
 | 段 | 内容 |
 | --- | --- |
-| `inbounds` | `mixed`（`127.0.0.1:7892`，给面板/命令行当代理口）+ `ebpf`（本地 cgroup 数据面、`dns_mode: hijack`、`bypass_private_address`、IPv6 开） |
+| `inbounds` | **eBPF**：`local`（cgroup 本机接管 + `bypass_rule_set` 让 CN IP 绕过）+ `shared`（`packet_rewrite` on `virbr0`，下游/VM 接管，实测直连与代理均通过）；另有 `mixed`（`127.0.0.1:7892`，给面板/命令行当代理口）+ `ebpf`（本地 cgroup 数据面、`dns_mode: hijack`、`bypass_private_address`、IPv6 开） |
 | `dns` | 7 个 server：1 个 `hosts` 引导 + 4 个 DoH（2 个走代理、2 个走直连）+ **2 个 `group` 故障转移组** |
 | `route` | 14 份规则集 + **11 条规则**（顺序即优先级，见下） |
 | `experimental` | `cache_file`（`store_dns: true`）、`clash_api`（`127.0.0.1:9090`） |
