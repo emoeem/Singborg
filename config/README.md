@@ -68,6 +68,36 @@ dns-direct = group[ali, tencent]    ← 国内域名走这里
 `cncidr-mihomo` ← HenryChiao/mihomo_yamls（AGPL-3.0-or-later）；
 `anti-AD` ← prprpi/anti-AD（上游未附许可证文件，个人使用）；其余自制。
 
+## 另一个规则仓库的评估：[lingqiqi5211/sing-box-rules](https://github.com/lingqiqi5211/sing-box-rules)
+
+定位：MIT、自用、**以 MetaCubeX `geo/full` 为基底**、多源合并去重、每天构建、sing-box 与 mihomo 双格式。
+看起来正好能补"官方包偏旧"的短板，但逐个量下来**只有一项值得考虑**：
+
+| 它提供 | 对比结果 | 结论 |
+| --- | --- | --- |
+| `geoip-cn.srs` | 81,593 B —— 与我们已经装的 mihomo `cncidr` **完全同样大小**（同一上游） | 冗余 |
+| `geosite-cn.srs` | 111,224 条 vs 官方 8,702 条（**+105,409**） | **看着诱人，实则陷阱**（见下） |
+| `geolocation-!cn` | 27,214 vs 官方 23,899（+14%） | 冗余：`route.final = Proxy`，外部域名本来就走代理 |
+| `google-domain` | 885 vs 官方 938 | 冗余：漏掉的 Google 域名也会经 !cn/final 走代理 |
+| `ai` | 222 条 vs 官方 181 条 | 在我列的 34 个 AI 服务域名上，**两边漏的是同一批 10 个** → 没有实际覆盖优势 |
+| `steam-cn` | 22 条：`st.dl.eccdnx.com`、`dl.steam.clngaa.com`、`steamchina.com`… **Steam 国服（完美世界）下载 CDN** | **唯一有价值的一项**（见下） |
+
+### 为什么"12 倍大的 CN 域名表"是陷阱
+
+抽了 24 个"只有它收录、官方没有"的域名，看它们解析到哪：
+
+- **14 个是国内 IP** → 我们已有的 `geoip/cn`（按 IP 判）**早就让它们直连了**，加域名表**没有任何变化**；
+- 5 个是国外 IP（阿里云国际、Shopify 等）→ 加域名表会把它们**强制直连**，反而可能更慢；
+- 5 个解析失败（域名已废）→ MetaCubeX 不剔除失效域名，官方包剔除。
+
+结论：**不加**。这也说明"表越大越好"是错觉 —— 得看它和已有规则**是否真的产生不同的判定**。
+
+### Steam 国服值得考虑（待定）
+
+现在配置里 Steam 全部走代理（实测 `steamstatic.com` / `api.steampowered.com` → Proxy，只有 `lancache.steamcontent.com` 在必须直连清单里）。
+如果玩国服，把上述 22 个国内 CDN 域名加进 `must-direct`（或单独一份直连清单）会明显加快下载。
+涉及不到 1 KB，随时可以加。
+
 ## 广告表的第二层：adblockfilters（2026-10-02 评估）
 
 [`217heidai/adblockfilters`](https://github.com/217heidai/adblockfilters)（7.6k stars，GPL-3.0，**每 8 小时**更新）
