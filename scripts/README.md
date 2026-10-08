@@ -23,6 +23,9 @@
 | `install-singbox.sh` | 安装/迁移 sing-box 到本机（最早的引导脚本） | ✅ |
 | `switch-to-local-rules.sh` | 早期方案：把规则集切成本地文件（不依赖运行期远程下载） | ✅ |
 | `apply-emoeem-mirrors.sh` | 配置自建 Arch 仓库的镜像（`[emoeem]` 段） | ✅ |
+| `generate-sanitized-config.py` | 生成 `config/config.sanitized.json` 脱敏快照：**结构化**脱敏（不是按键名替换）+ 拒写断言。源配置是 0600 root，所以要用 root 跑 | ✅ |
+| `apply-hardening-2026-10-08.sh` | 2026-10-08 加固一键落地（备份 → `sing-box check` → 原子替换 → 健康检查 → 失败自动回滚）。开关见下 | ✅ |
+| `test-singbox-2026-10-08.sh` | 第 5 步验收测试 T1–T7：服务面 / 国内直连（eBPF 路径）/ 显式代理链路 / TCP+UDP-QUIC / DNS 防泄漏 / 并发稳定性 / 可选的节点失效切换与回落 | ✅ |
 
 ## `switch-to-ebpf.sh` 的开关
 
@@ -69,6 +72,32 @@ sudo ./apply-audit-fixes.sh \
 `--use-package-paths` 只认它**内置的 tag 表**（anti-AD / geoip/cn-fresh / cncidr-mihomo /
 must-direct / ads-extra / **adblockfilters**）。表里漏掉的 tag 会被留在 `/etc/sing-box/rule-set/`，
 于是 `pacman -Syu` 更新规则集包时它**不会跟着更新** —— `adblockfilters` 就这么漏过一次，已修。
+
+## `apply-hardening-2026-10-08.sh` 的开关
+
+```bash
+sudo ./apply-hardening-2026-10-08.sh --dry-run     # 只生成候选 + check + 打印 diff，不落盘不重启（建议先跑这个）
+sudo ./apply-hardening-2026-10-08.sh               # 正式执行（默认全做）
+sudo ./apply-hardening-2026-10-08.sh --keep-cors   # 不动 CORS（保留 * 与 private-network 放行）
+sudo ./apply-hardening-2026-10-08.sh --no-routing  # 不改 Download 默认节点与 Auto/Auto-Japan 候选
+sudo ./apply-hardening-2026-10-08.sh --no-retention# 只加固备份权限，不做保留/归档
+sudo ./apply-hardening-2026-10-08.sh --harden-cache-db  # 顺带 chmod 600 /var/lib/sing-box/cache.db（默认关）
+```
+
+它做六件事：① 轮换两个控制面密钥为各自独立的随机值 ② CORS 收紧到 `127.0.0.1:9096`/`localhost:9096`
+并删掉 `access_control_allow_private_network` ③ 删除未被引用的 `block` 出站 ④ `Download` 默认节点改为
+「🇯🇵 日本Z05｜下载专用」并从 `Auto`/`Auto-Japan` 剔除它 ⑤ 备份目录 700 / 文件 600 + 保留 10 份 + 7 天外归档
+⑥ 写 `20-network-online.conf` drop-in。用 `flock` 保证单实例，进程被 `check` 拦下时按原配置起回服务。
+
+## `test-singbox-2026-10-08.sh` 的开关
+
+```bash
+sudo ./test-singbox-2026-10-08.sh --load-seconds 120   # 第 6 项并发负载时长（默认 60）
+sudo ./test-singbox-2026-10-08.sh --with-failover      # 追加 T7：临时 nft 屏蔽当前节点 IP，等 urltest 切换；撤销后等回落
+```
+
+T7 会临时建 `inet sbx_test` 表（**IPv4+IPv6 两条**都写，否则拦不住默认走 IPv6 的连接），
+结束时无论成败都会删表；若被中断请手动 `sudo nft delete table inet sbx_test` 收尾。
 
 ## 健康判据（两种模式不一样）
 

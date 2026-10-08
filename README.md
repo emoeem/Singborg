@@ -9,11 +9,12 @@ sing-box 在一台 Arch/CachyOS 笔记本上落地为「透明代理 + 规则分
 > ## ⚠️ 关于脱敏
 > 本仓库**公开**，所以所有地址与凭据都换成了占位符：
 > `<clash-api-secret>`（Clash API / 面板密钥）、`<home-ip>`（自己的家宽 IP）、
-> `<proxy-exit-ip>`（代理出口 IP）、`<node-server>` / `<password>`（节点地址与密码）。
+> `<proxy-exit-ip>`（代理出口 IP）、`<node-server>` / `<password>`（节点地址与密码）、
+> `<lan-gateway>`（家庭网关/路由器地址）。
 > [`config/config.sanitized.json`](config/config.sanitized.json) 保留了**完整结构**（字段、规则、
 > 分流顺序），只把值换掉 —— 可以照着学结构，但抄不走节点。
 
-## 现在是什么状态（2026-10-02 收尾时）
+## 现在是什么状态（2026-10-08 加固后）
 
 | 项 | 值 |
 | --- | --- |
@@ -21,7 +22,10 @@ sing-box 在一台 Arch/CachyOS 笔记本上落地为「透明代理 + 规则分
 | 分流 | 国内直连 · 海外走代理（机场节点，`Proxy → Auto` URLTest 自动选优） |
 | DNS | 53 端口全部劫持，无泄露；DoH 出口在代理侧；国内域名走阿里/腾讯 DoH |
 | 广告拦截 | 24/26 个测试端点被拦（DNS `predefined/NXDOMAIN` + 连接层 `reject` 双保险） |
-| 规则集 | 15 份（6 份来自自建包 `/usr/share/sing-box-rule-sets`，随 pacman 更新） |
+| 规则集 | 17 份（8 份来自自建包 `/usr/share/sing-box-rule-sets`，随 pacman 更新） |
+| 控制面 | `clash_api`（127.0.0.1:9090）与 `services.api`（127.0.0.1:9091）**各自独立的随机密钥**；CORS 只放行本机面板源（不再是 `*`） |
+| 备份 | `/etc/sing-box/backups/` 700、文件 600；保留「最新 10 份 + 7 天内不归档」，超出部分打包（不直接删） |
+| 开机顺序 | drop-in `20-network-online.conf` 补 `Wants=network-online.target`（修 `missing default interface`） |
 | 面板 | 自研 `sing-box-panel`（127.0.0.1:9096，内嵌 zashboard）+ 官方 dashboard（:9091） |
 | 日志 | 当前进程 **零告警零错误**；`NRestarts=0`、无 OOM |
 | 自建仓库 | `sing-box-ebpf`（reF1nd 分支 + `with_ebpf`）、`sing-box-panel`、`sing-box-rule-sets` |
@@ -39,7 +43,8 @@ sing-box 在一台 Arch/CachyOS 笔记本上落地为「透明代理 + 规则分
 | [07 daed DNS 故障诊断](docs/07-daed-DNS故障诊断.md) | **历史（daed 时代，daed 已弃用）**：为什么最后没走 daed（DNS 故障的完整定位过程） | 想试 daed 之前 |
 | [08 daed 迁移计划](docs/08-daed-迁移计划.md) | **历史（daed 时代）**：那份迁移方案 —— 已执行完毕，文首有待办核对表 | 同上 |
 | [09 踩坑与经验](docs/09-踩坑与经验.md) | **工程向坑清单**：哪些是 sing-box 的、哪些是内核的、哪些是我自己测错的 | 最推荐先看这个 |
-| [scripts/](scripts/) | 11 个运维脚本 | 直接用 |
+| [10 审计报告 2026-10-08](docs/10-审计报告-2026-10-08.md) | 第二轮完整审计：官方/社区核对、脚本审计、逐字段体检、**加固落地与验收测试（T1–T6 全过）** | 想知道"这轮到底改了什么、凭什么改" |
+| [scripts/](scripts/) | 14 个脚本（含脱敏快照生成器与 10-08 加固/测试脚本） | 直接用 |
 | [trial/](trial/) | eBPF A/B 试跑套件（独立状态目录，不动线上） | 想验证 eBPF 是否适合自己 |
 | [config/](config/) | 脱敏后的配置快照 + 规则集清单 | 学配置结构 |
 
@@ -67,6 +72,11 @@ sing-box 在一台 Arch/CachyOS 笔记本上落地为「透明代理 + 规则分
 - `13:0x` **更正**：以 root 逐条探测四条数据面 → shared `packet_rewrite` / `socket_assign` **都通过**（此前「shared 不可用」是未经验证的推断）
 - `13:0x` 量化 `bypass_rule_set`：抽样 150 个走代理的域名只有 **0.8%** 解析到 CN IP（会被改成直连）→ 近乎纯收益；顺手把 18 条 Steam 国服 CDN 加进必须直连清单
 - `12:4x` 评估 [`217heidai/adblockfilters`](https://github.com/217heidai/adblockfilters)：与 anti-AD **只重叠 35%**、独有 13.9 万条域名，对照组 0 误伤 → 作为第二层广告表加进规则集包（`--with-abf` 启用）
+
+**10-08**
+- 完整审计（[10](docs/10-审计报告-2026-10-08.md)）→ **加固上线**：两个控制面密钥轮换为各自独立的随机值、CORS 由 `*` 收紧到本机面板源、删掉未被引用的 `block` 出站、`Download` 默认节点改为下载专用节点并把它从 `Auto`/`Auto-Japan` 的 urltest 候选里剔除、备份目录 700/文件 600 + 保留与归档策略、补 `Wants=network-online.target` drop-in
+- 修掉脱敏脚本的真缺陷（W2）：`dns.rules[*].server`（DNS 服务器 tag）被误当成节点主机名替换成 `<node-server>`，公开快照的 DNS 分流引用因此失真 —— 现加了拒写断言
+- 验收：T1–T6 全过（120 秒 227/0 失败，CPU 0.62s / RSS 108 MB），T7（节点失效自动切换与回落）**待补**
 
 ## 几条最值钱的结论
 

@@ -17,9 +17,9 @@
       "secret": "<clash-api-secret>",
       "default_mode": "Rule",
       "access_control_allow_origin": [
-        "*"
-      ],
-      "access_control_allow_private_network": true
+        "http://127.0.0.1:9096",
+        "http://localhost:9096"
+      ]
     }
   },
   "dns": {
@@ -94,6 +94,13 @@
     "rules": [
       {
         "rule_set": [
+          "must-direct"
+        ],
+        "action": "route",
+        "server": "dns-direct"
+      },
+      {
+        "rule_set": [
           "geosite/category-ads-all",
           "Ads_AWAvenue",
           "anti-AD",
@@ -112,7 +119,8 @@
       },
       {
         "rule_set": [
-          "geosite/cn"
+          "geosite/cn",
+          "lyc/cn"
         ],
         "action": "route",
         "server": "dns-direct"
@@ -127,7 +135,8 @@
       },
       {
         "rule_set": [
-          "geosite/geolocation-!cn"
+          "geosite/geolocation-!cn",
+          "lyc/geolocation-!cn"
         ],
         "action": "route",
         "server": "dns-proxy"
@@ -186,10 +195,6 @@
     {
       "type": "direct",
       "tag": "direct"
-    },
-    {
-      "type": "block",
-      "tag": "block"
     },
     {
       "type": "shadowsocks",
@@ -336,7 +341,6 @@
         "🇯🇵 日本Z02 | IEPL",
         "🇯🇵 日本Z03 | IEPL",
         "🇯🇵 日本Z04 | IEPL",
-        "🇯🇵 日本Z05 | 下载专用",
         "🇭🇰 香港Z01",
         "🇭🇰 香港Z02 | IEPL",
         "🇭🇰 香港Z03 | IEPL",
@@ -392,8 +396,7 @@
         "🇯🇵 日本Z01 | IEPL",
         "🇯🇵 日本Z02 | IEPL",
         "🇯🇵 日本Z03 | IEPL",
-        "🇯🇵 日本Z04 | IEPL",
-        "🇯🇵 日本Z05 | 下载专用"
+        "🇯🇵 日本Z04 | IEPL"
       ],
       "url": "https://www.gstatic.com/generate_204",
       "interval": "5m",
@@ -488,9 +491,7 @@
       },
       {
         "type": "local",
-        "tag": [
-          "Ads_AWAvenue"
-        ],
+        "tag": "Ads_AWAvenue",
         "format": "binary",
         "path": "/etc/sing-box/rule-set/AWAvenue-Ads-Rule.srs"
       },
@@ -529,6 +530,18 @@
         "tag": "adblockfilters",
         "format": "binary",
         "path": "/usr/share/sing-box-rule-sets/adblockfilters.srs"
+      },
+      {
+        "type": "local",
+        "tag": "lyc/cn",
+        "format": "binary",
+        "path": "/usr/share/sing-box-rule-sets/lyc-geosite-cn.srs"
+      },
+      {
+        "type": "local",
+        "tag": "lyc/geolocation-!cn",
+        "format": "binary",
+        "path": "/usr/share/sing-box-rule-sets/lyc-geosite-geolocation-!cn.srs"
       }
     ],
     "rules": [
@@ -588,14 +601,16 @@
       },
       {
         "rule_set": [
-          "geosite/cn"
+          "geosite/cn",
+          "lyc/cn"
         ],
         "action": "route",
         "outbound": "direct"
       },
       {
         "rule_set": [
-          "geosite/geolocation-!cn"
+          "geosite/geolocation-!cn",
+          "lyc/geolocation-!cn"
         ],
         "action": "route",
         "outbound": "Proxy"

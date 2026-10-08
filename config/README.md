@@ -4,20 +4,34 @@
 
 本机 `/etc/sing-box/config.json` 的脱敏快照，作用是**看懂结构**。
 
-> ✅ **2026-10-02 23:0x 已按现役配置重新生成**，与线上一致：15 份规则集（含 `adblockfilters`）、
-> `inbounds[ebpf].shared = {enabled: true, data_plane: packet_rewrite, interface: ["virbr0"]}`、
-> `local.bypass_rule_set = ["geoip/cn", "geoip/cn-fresh", "cncidr-mihomo"]`。
-> （早先那份 20:03 的快照缺这三项，已替换；配置一改就请重新生成，别让快照落后于线上。）
+> ✅ **2026-10-08 已按现役配置对齐线上**：17 份规则集（含 `adblockfilters` 与后加的 `lyc/cn`、
+> `lyc/geolocation-!cn`）、`inbounds[ebpf].shared = {enabled: true, data_plane: packet_rewrite, interface: ["virbr0"]}`、
+> `local.bypass_rule_set = ["geoip/cn", "geoip/cn-fresh", "cncidr-mihomo"]`、`clash_api` 的 CORS 收紧到本机面板源、
+> 未引用的 `block` 出站已删除、`Download` 组默认节点已改。
+> （配置一改就请重新生成，别让快照落后于线上。生成：`sudo scripts/generate-sanitized-config.py --source /etc/sing-box/config.json` ——
+> 源配置是 0600 root，必须用 root 跑；脚本自身只读本地文件，不联网、不执行 git/上传。）
 
 - 保留：`inbounds` / `outbounds` 的结构与协议字段 / `dns` / `route` / `experimental`，
   以及每个 `rule_set` 的 `path`（**路径本身是最有信息量的部分**：一眼看出哪几份是自建的）；
 - 换掉：代理节点的 `server` → `<node-server>`、`server_port` → `0`、`password`/`uuid`/`sni`/`host`
-  → 占位符；两处 `secret`（`clash_api` 与 `services[api]`）→ `<clash-api-secret>`；
+  → 占位符；两处 `secret`（`clash_api` 与 `services[api]`）→ `<clash-api-secret>`
+  （两处在线上是**各自独立**的 43 字符随机值，快照里共用一个占位符）；
 - **没有**换掉：DNS 的公共 DoH 端点（`1.1.1.1` / `8.8.8.8` / `dns.alidns.com` / `doh.pub`）——
   那是公共设施，也是配置里最重要的思路之一。
 
 > 生成脚本是「结构化脱敏」而不是「按键名替换」：`server` 这个键名同时出现在代理节点（要脱）
 > 和 DNS 服务器（不该脱）里，按键名替换会把两者一起打掉。生成后有自检断言。
+>
+> ⚠️ **2026-10-08 修掉一个真实缺陷（W2）**：`dns.rules[*].server` 里放的是 **DNS 服务器 tag**
+> （`dns-direct` / `dns-proxy`），而旧脚本只在「带 `type` 字段的 `dns.servers[*]`」里认 DNS 上下文，
+> `dns.rules` 条目没有 `type` → 它的 `server` 被当成节点主机名，统统替换成 `<node-server>`，
+> 于是公开快照里 DNS 分流引用失真（是**错误**，不是泄漏）。修法：新增
+> `is_dns_rule()`（同时含 `action`、且 `server` 是字符串 → 视为 DNS 规则），并把递归上下文改为
+> `context in {"dns", "dns_server"} or is_dns_server(obj) or is_dns_rule(obj)`，遇到 `dns` /
+> `default_domain_resolver` 键把子树上下文标成 DNS；另加两条**拒写断言**：逐条比对源与输出的
+> `dns.rules[*].server`（不一致直接退出），以及 `dns` 段里出现 `<node-server>` 也退出。
+> 本次快照已按真实 tag 还原：`must-direct`/`apple@cn`/`cn`+`lyc/cn` → `dns-direct`；
+> `google`+`category-ai-!cn`、`geolocation-!cn`+`lyc/geolocation-!cn` → `dns-proxy`。
 
 ## 整体结构
 
@@ -25,7 +39,7 @@
 | --- | --- |
 | `inbounds` | **eBPF**：`local`（cgroup 本机接管 + `bypass_rule_set` 让 CN IP 绕过）+ `shared`（`packet_rewrite` on `virbr0`，下游/VM 接管，实测直连与代理均通过）；另有 `mixed`（`127.0.0.1:7892`，给面板/命令行当代理口）+ `ebpf`（本地 cgroup 数据面、`dns_mode: hijack`、`bypass_private_address`、IPv6 开） |
 | `dns` | 7 个 server：1 个 `hosts` 引导 + 4 个 DoH（2 个走代理、2 个走直连）+ **2 个 `group` 故障转移组** |
-| `route` | 15 份规则集 + **11 条规则**（顺序即优先级，见下） |
+| `route` | 17 份规则集 + **11 条规则**（顺序即优先级，见下） |
 | `experimental` | `cache_file`（`store_dns: true`）、`clash_api`（`127.0.0.1:9090`） |
 | `services` | `api`（`127.0.0.1:9091`，官方 dashboard 与 `sing-box api` 命令都走它） |
 
@@ -47,7 +61,22 @@ dns-direct = group[ali, tencent]    ← 国内域名走这里
 
 `type: group` 是**这个 fork 支持、上游 1.14 不支持**的特性，用来把闲置的备用 DNS 编成故障转移组。
 
-## 规则集清单（15 份）
+### `dns.rules`：6 条（顺序即优先级）
+
+| # | 命中 | 动作 | server |
+| --- | --- | --- | --- |
+| 1 | `must-direct` | `route` | `dns-direct` |
+| 2 | 广告五表（同 `route` 第 5 条） | `predefined` + `NXDOMAIN` | —（不对上游发查询） |
+| 3 | `geosite/apple@cn` | `route` | `dns-direct` |
+| 4 | `geosite/cn` + `lyc/cn` | `route` | `dns-direct` |
+| 5 | `geosite/google` + `geosite/category-ai-!cn` | `route` | `dns-proxy` |
+| 6 | `geosite/geolocation-!cn` + `lyc/geolocation-!cn` | `route` | `dns-proxy` |
+
+未命中任何一条时走 `dns.final = dns-proxy`。第 1 条是 **2026-10-08 才补上的**：`must-direct` 里的域名
+（STUN / 游戏主机 / LAN cache / Steam 国服 CDN）若拿代理侧 DNS 解析，会出现"连接判直连、解析却绕道境外"
+的错配，补上后两条判定一致。
+
+## 规则集清单（17 份）
 
 | 来源 | tag | 路径 |
 | --- | --- | --- |
@@ -57,11 +86,13 @@ dns-direct = group[ali, tencent]    ← 国内域名走这里
 | | `must-direct` | `/usr/share/sing-box-rule-sets/must-direct.srs` |
 | | `ads-extra` | `/usr/share/sing-box-rule-sets/ads-extra.srs` |
 | | `adblockfilters` | `/usr/share/sing-box-rule-sets/adblockfilters.srs`（215248 条域名后缀，`--with-abf` 启用） |
+| | `lyc/cn` | `/usr/share/sing-box-rule-sets/lyc-geosite-cn.srs`（2026-10-08 新增） |
+| | `lyc/geolocation-!cn` | `/usr/share/sing-box-rule-sets/lyc-geosite-geolocation-!cn.srs`（2026-10-08 新增） |
 | 官方 `sing-geosite/sing-geoip` 包 | `geosite/category-ads-all` `geosite/cn` `geosite/geolocation-!cn` `geosite/google` `geosite/category-ai-!cn` `geoip/cn` `geosite/apple@cn` | `/usr/share/sing-box/rule-set/…` |
 | 手工放在 `/etc`（早期方案遗留） | `Ads_AWAvenue` | `/etc/sing-box/rule-set/AWAvenue-Ads-Rule.srs` |
 | | `geoip/telegram` | `/etc/sing-box/rule-set/geoip-telegram.srs` |
 
-| 自建包的六份 | 是什么 |
+| 自建包的八份 | 是什么 |
 | --- | --- |
 | `anti-ad.srs` | anti-AD 广告/追踪表（AdGuard 语法，构建时用 `sing-box rule-set convert -t adguard` 转） |
 | `geoip/cn-fresh` | MetaCubeX 最新 `geoip/cn`（官方包那份实测**偏旧**：8045 条 vs 9648 条） |
@@ -69,6 +100,8 @@ dns-direct = group[ali, tencent]    ← 国内域名走这里
 | `must-direct` | 自制两类：① STUN / 游戏主机 / LAN cache / NCSI（走代理会坏功能）② **Steam 国服 CDN** 18 条（`st.dl.eccdnx.com`、`dl.steam.clngaa.com`、`csgo.com.cn`…，直连明显更快）；**刻意不含** `steamcontent.com`/`steamusercontent.com`/`cm.steampowered.com` 等全球域名（强制直连有风险）。2026-10-02 用 `sing-box rule-set decompile` 实测：`domain_suffix` 24 条 + `domain` 9 条，其中 Steam 国服相关 **正好 18 条** ✅ |
 | `ads-extra` | 自制：`ad.duowan.com` / `sdkmob.com` / `ads.wps.cn`（anti-AD 漏掉的国内广告端点，只用精确域名） |
 | `adblockfilters` | `217heidai/adblockfilters` 聚合广告表（215,248 条 `domain_suffix`，与 anti-AD 只重叠 35%）—— 详见下节 |
+| `lyc-geosite-cn.srs` | lyc8503 的国内域名表（2026-10-08 加入；`refresh-rule-sets.sh` 里有对应源） |
+| `lyc-geosite-geolocation-!cn.srs` | 同一来源的「非中国」域名表（与官方 `geolocation-!cn` 并联使用） |
 
 **许可**：`geoip/cn-fresh` ← MetaCubeX/meta-rules-dat（GPL-3.0-or-later）；
 `cncidr-mihomo` ← HenryChiao/mihomo_yamls（AGPL-3.0-or-later）；
@@ -152,8 +185,8 @@ sudo ./scripts/apply-audit-fixes.sh --with-abf      # 会把它加进 dns 与 ro
 | 5 | 广告五表 → `reject` | 连接层拦广告（浏览器自带 DoH 绕过 DNS 规则时靠这层兜底）。**2026-10-02 实测是 5 份**：`geosite/category-ads-all` + `Ads_AWAvenue` + `anti-AD` + `ads-extra` + `adblockfilters` |
 | 6 | `geosite/google` + `category-ai-!cn` → Proxy | 明确要走代理的服务 |
 | 7 | `geosite/apple@cn` → direct | 苹果国内服务直连（否则 App Store 下载会很慢） |
-| 8 | `geosite/cn` → direct | 国内域名 |
-| 9 | `geosite/geolocation-!cn` → Proxy | 其余国外域名 |
+| 8 | `geosite/cn` + `lyc/cn` → direct | 国内域名（两份并联，2026-10-08 起） |
+| 9 | `geosite/geolocation-!cn` + `lyc/geolocation-!cn` → Proxy | 其余国外域名（同上） |
 | 10 | `geoip/telegram` → Proxy | Telegram 的 IP 段 |
 | 11 | `geoip/cn` + `geoip/cn-fresh` + `cncidr-mihomo` → direct | **三份一起匹配**：任何一份认出来就直连（补官方表偏旧的漏） |
 
@@ -170,6 +203,27 @@ sudo ./scripts/apply-audit-fixes.sh --with-abf      # 会把它加进 dns 与 ro
 [《踩坑与经验》第 3 条](../docs/09-踩坑与经验.md)：`reject` 回 REFUSED，而 `systemd-resolved`
 不把它转告客户端，应用每个广告域名要等约 5 秒；`NXDOMAIN` 是正常应答，**11 ms** 就失败。
 
+## 2026-10-08 加固（已上线）
+
+一轮完整审计（[10-审计报告-2026-10-08](../docs/10-审计报告-2026-10-08.md)）之后的落地改动，
+全部由 `scripts/apply-hardening-2026-10-08.sh` 执行（备份 → `sing-box check` → 原子替换 →
+健康检查 → 任一环节失败自动回滚）：
+
+| # | 改动 | 为什么 |
+| --- | --- | --- |
+| 1 | `experimental.clash_api.secret` 与 `services[api].secret` 轮换为**各自独立**的 43 字符随机值 | 旧值只有 11 字符、是**可猜的单词**，且两个控制面共用同一个密钥 |
+| 2 | `access_control_allow_origin`：`["*"]` → `["http://127.0.0.1:9096","http://localhost:9096"]`，并删掉 `access_control_allow_private_network` | 实测 9090 对任意 Origin（含 `https://evil.example`）都回 `Access-Control-Allow-Origin: *`，配合 private-network 放行，任意网页都能跨域读写本机代理控制面 |
+| 3 | 删除未被引用的出站 `{type: block, tag: block}` | 连接层拦截已由 `route` 第 5 条的 `action: reject` 承担；这个出站全文只出现在它自己的声明里 |
+| 4 | `Download` 组默认节点由 `Auto` 改为「🇯🇵 日本Z05｜下载专用」，并把该节点从 `Auto`（11→10）与 `Auto-Japan`（5→4）的 urltest 候选里剔除 | 该节点标称"下载专用"，不该参与日常自动选优（它曾经死掉还占着默认位置） |
+| 5 | 备份加固：`/etc/sing-box/backups/` → 700、`config.json.bak.*` → 600；每个目录保留最新 10 份 + 7 天内的不归档，超出部分 `tar.gz` 归档（**不直接删**） | 那 23 份备份是**完整配置副本**（含全部节点口令与控制面密钥），原来 644 → 本机任意用户可读 |
+| 6 | 新增 drop-in `/etc/systemd/system/sing-box.service.d/20-network-online.conf`（`Wants=network-online.target`） | 原 unit 只有 `After=` 没有 `Wants=`，开机早期会报 `network: missing default interface` |
+
+有意**不动**的：版本（与上游 v1.14.2 已持平）、`cache_file` 与双控制面（9090 Clash API + 9091 services api）、
+`route.find_process`（保持 `false`，没有 process 匹配规则）、`dns.rules` 的结构。
+
+> 待确认的一项：`chmod 600 /var/lib/sing-box/cache.db`（当前 644，本地可读 DNS 查询历史）。
+> 加固脚本带开关 `--harden-cache-db`，默认关闭。
+
 ## 变更记录（都是脚本自动备份出来的）
 
 备份在 `/etc/sing-box/backups/`，命名带语义：
@@ -179,6 +233,16 @@ config.<时间戳>.pre-audit.json       审计修复前
 config.<时间戳>.pre-ebpf.json        切 eBPF 前（= TUN 配置，切回来时用它取 TUN 定义）
 config.<时间戳>.pre-dataplane.json   改数据面前
 config.<时间戳>.pre-tun.json         切回 TUN 前
+config.json.bak.<时间戳>             2026-10-08 加固前的原样副本（install -m 600 生成）
+```
+
+2026-10-08 的回滚（一层就够，脚本健康检查失败时也是这么干的）：
+
+```bash
+sudo install -m 600 -o root -g root /etc/sing-box/config.json.bak.<时间戳> /etc/sing-box/config.json
+sudo systemctl restart sing-box && systemctl is-active sing-box && ss -ltn | grep -E '7892|9090|9091'
+# 只撤开机等待网络的 drop-in：
+sudo rm /etc/systemd/system/sing-box.service.d/20-network-online.conf && sudo systemctl daemon-reload
 ```
 
 回滚永远是一条命令：
