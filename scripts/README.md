@@ -26,6 +26,9 @@
 | `generate-sanitized-config.py` | 生成 `config/config.sanitized.json` 脱敏快照：**结构化**脱敏（不是按键名替换）+ 拒写断言。源配置是 0600 root，所以要用 root 跑 | ✅ |
 | `apply-hardening-2026-10-08.sh` | 2026-10-08 加固一键落地（备份 → `sing-box check` → 原子替换 → 健康检查 → 失败自动回滚）。开关见下 | ✅ |
 | `test-singbox-2026-10-08.sh` | 第 5 步验收测试 T1–T7：服务面 / 国内直连（eBPF 路径）/ 显式代理链路 / TCP+UDP-QUIC / DNS 防泄漏 / 并发稳定性 / 可选的节点失效切换与回落 | ✅ |
+| `apply-config-new-2026-10-12.sh` | 把 `config/config.new.json` 的改动落到现网（默认只改 4 个 urltest 的 `interval` 5m→3m）：备份 → `sing-box check` → 原子替换 → 重启 → 健康检查 → **失败自动回滚**。加 `--with-dns-local` 才动 DNS，且先探测再写 | ✅（`--dry-run` 免 root 预览） |
+| `harden-boot-stepwise-2026-10-12.sh` | 开机加固**一步一确认**：`cache.db` 权限 → libvirtd 排序 drop-in → UMask drop-in → 重启前标记。另有 `--preflight`（只读体检）、`--post-reboot`（采开机窗口证据）、`--rollback`。默认 dry-run | ✅（`--preflight` / `--post-reboot` / `--dry-run` 免 root） |
+| `sing-box-burst-probe.sh` | 抓住 `connection upload handshake: dial tcp …: i/o timeout` 的**下一次突发**，并在**当时**对同一端点做「裸 connect vs TFO(MSG_FASTOPEN) connect」A/B：裸通+TFO 超时 ⇒ 中间盒吃 SYN+data；两者皆超时 ⇒ 路径/中转入口丢包。只读、不用 sudo；`once <ip> <port>` 可立即单测 | ❌（只读） |
 
 ## `switch-to-ebpf.sh` 的开关
 
@@ -98,6 +101,22 @@ sudo ./test-singbox-2026-10-08.sh --with-failover      # 追加 T7：临时 nft 
 
 T7 会临时建 `inet sbx_test` 表（**IPv4+IPv6 两条**都写，否则拦不住默认走 IPv6 的连接），
 结束时无论成败都会删表；若被中断请手动 `sudo nft delete table inet sbx_test` 收尾。
+
+## `harden-boot-stepwise-2026-10-12.sh` 的开关
+
+```bash
+bash ./harden-boot-stepwise-2026-10-12.sh --preflight          # 只读体检：端口/代理链路/cache.db/drop-in/两个候选
+sudo bash ./harden-boot-stepwise-2026-10-12.sh --dry-run        # 逐步打印全计划，不改任何文件（默认就是这个）
+sudo bash ./harden-boot-stepwise-2026-10-12.sh                  # 交互式落地，每步停下来问 yes
+sudo bash ./harden-boot-stepwise-2026-10-12.sh --yes            # 跳过逐步确认（仍需 root）
+sudo bash ./harden-boot-stepwise-2026-10-12.sh --step1 --step3  # 只做指定步骤
+bash ./harden-boot-stepwise-2026-10-12.sh --post-reboot --out /tmp/reboot-report.txt   # 重启后采证据（免 root）
+sudo bash ./harden-boot-stepwise-2026-10-12.sh --rollback       # 卸载装过的 drop-in（不动 cache.db 权限）
+```
+
+`--post-reboot` 会对比重启前的标记文件，并把 boot+0..300s 窗口内的告警**按「网络/开机链路」过滤**后单独列出
+（整机原始告警里绝大多数是桌面会话噪声）。注意它内置一条判据保护：若 `sing-box` 的 `ActiveEnterTimestamp`
+距本次开机 > 600s，说明它是被手工重启的，此时**不会**输出「libvirtd → sing-box 间距」结论。
 
 ## 健康判据（两种模式不一样）
 
