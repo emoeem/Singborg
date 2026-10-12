@@ -104,9 +104,15 @@ sing-box 自己的 DNS 缓存，而 `experimental.cache_file.store_dns = true` �
 查询会"0 条答案、0 ms"返回，而带 EDNS0 的查询因缓存键不同会绕过它 —— 症状是「某些网站
 打不开、别的都正常」，而且**重启不消失**（缓存落了盘）。当时表现为 Firefox 打不开 `emoe.eu.cc`。
 
-**判据**：拿 DoH 的真实答案当基准（`curl --resolve` 直连 `1.1.1.1`/`8.8.8.8`，既不经过 53
+**判据一（缓存故障）**：拿 DoH 的真实答案当基准（`curl --resolve` 直连 `1.1.1.1`/`8.8.8.8`，既不经过 53
 劫持、也不依赖域名解析），只有「DoH 有 A 记录、本机说没有」才算故障；**拿不到 DoH 基准时
 一律判为"无法判断"，绝不动手**（网络本身坏了不该被当成缓存故障去重启代理）。
+
+**判据二（服务存活）**：unit 是 `enabled`（管理员要求它开机就跑）却不 `active` → 直接
+`systemctl start` 它。**这条不是锦上添花**：本机出网走 sing-box 的 eBPF 透明代理（`ip route`
+里没有 tun 设备），它一停，连判据一要用的 DoH 基准都不可达 —— 2026-10-12 受控演练实测，
+这种情况下判据一**永远只会说"无法判断"**（见下一节）。判据二完全不依赖网络，所以不受这个
+死循环影响。想长期停用请 `systemctl disable --now sing-box`：`disabled` 的 unit 看门狗不碰。
 
 ```bash
 # 安装（需要 root）
@@ -146,6 +152,36 @@ sudo systemctl reset-failed sing-box-dns-watchdog.service
 sudo systemctl start sing-box-dns-watchdog.service       # 立刻走一次真实自愈路径
 ```
 
+### 2026-10-12 受控演练：判据一发现不了「代理挂了」（判据二就是为它补的）
+
+按"停掉 sing-box，看它能不能自己把 sing-box 拉起来"做的演练，**第一次是失败的**：
+
+```
+$ sudo systemctl stop sing-box && sudo systemctl start sing-box-dns-watchdog.service
+[dns-watchdog] emoe.eu.cc:    无法判断（DoH 基准拿不到；本机 2 条）
+[dns-watchdog] www.baidu.com: 无法判断（DoH 基准拿不到；本机 1 条）
+[dns-watchdog] github.com:    无法判断（DoH 基准拿不到；本机 1 条）
+[dns-watchdog] 解析正常（3 个域名无法判断）     ← sing-box 其实还是 inactive，服务没被拉起来
+```
+
+根因是设计里的一个盲点，不是偶发：**判据一的基准自己依赖被监控的对象**。`ip route` 里没有
+tun 设备，出网由 eBPF 钩子改道到 sing-box；它一停，`curl --resolve … https://1.1.1.1` 也
+跟着不通 → 三个域名全部「无法判断」→ 按"绝不动手"的规则什么都不做。也就是说**单靠判据一，
+`sing-box` 崩溃是一个永远看不见的故障**——而那是整机断网，比缓存脏严重得多。
+
+修法：加判据二（见上），并把它的执行**排在探测循环之前**（systemctl 走 D-Bus，不需要网络）；
+存活自愈只 `start`、不删缓存不碰配置，冷却 300s（比缓存自愈的 900s 短，因为后果是断网）。
+另外把"全部无法判断"时的日志从"解析正常"改掉——那句话在演练里正是误导来源。
+
+正确的演练姿势（先把含判据二的新脚本装上去，命令见上一节的 `sudo install …`）：
+
+```bash
+sudo systemctl stop sing-box
+sudo systemctl start sing-box-dns-watchdog.service
+journalctl -u sing-box-dns-watchdog.service -n 20    # 期望：不活动 → 存活自愈成功
+systemctl is-active sing-box                          # 期望：active（不再需要人工兜底）
+```
+
 回归测试（免 root；静态核对 `ReadWritePaths`/`RuntimeDirectory` 是否覆盖脚本要写的每个
 路径 + `systemd-run --user` 真沙箱正/反向探针 + 判据自测）：
 
@@ -156,9 +192,9 @@ sudo systemctl start sing-box-dns-watchdog.service       # 立刻走一次真实
 验收：
 
 ```bash
-/usr/local/bin/sing-box-dns-watchdog --check       # 免 root，三个域名应当都 ok
-/usr/local/bin/sing-box-dns-watchdog --self-test   # 免 root，判据的 6 个合成用例
-~/code/Singborg/scripts/test-dns-watchdog.sh       # 免 root，7 项（含沙箱放行核对与真沙箱探针）
+/usr/local/bin/sing-box-dns-watchdog --check       # 免 root，三个域名应当都 ok，且不报「却不活动」
+/usr/local/bin/sing-box-dns-watchdog --self-test   # 免 root，两条判据的 12 个合成用例
+~/code/Singborg/scripts/test-dns-watchdog.sh       # 免 root，13 项（沙箱放行核对 + 真沙箱正/反向探针 + 存活判据接线）
 systemctl list-timers sing-box-dns-watchdog.timer  # 期望 5 分钟一次
 journalctl -u sing-box-dns-watchdog.service -n 20  # 每次运行一行
 systemctl is-failed sing-box-dns-watchdog.service  # 期望 inactive（不是 failed）
@@ -175,8 +211,10 @@ sudo systemctl daemon-reload
 
 自愈动作**只动缓存、不碰配置**：`stop sing-box → 删 cache.db → start → resolvectl
 flush-caches → 复测`；修不好就以非 0 退出（这样 `systemctl --failed` 看得见），不安静重试。
-冷却 900s，避免在"清缓存也没用"的故障上反复重启代理。定时任务每 5 分钟跑一次 `--heal`。
-可调项写 `/etc/sing-box/dns-watchdog.conf`（`WATCH_DOMAINS` / `HEAL_COOLDOWN` / `RECHECK_DELAY`）。
+冷却 900s，避免在"清缓存也没用"的故障上反复重启代理。存活自愈是另一条路径：只 `start`，
+冷却 300s（见上一节）。定时任务每 5 分钟跑一次 `--heal`。
+可调项写 `/etc/sing-box/dns-watchdog.conf`（`WATCH_DOMAINS` / `WATCH_SERVICE_LIVENESS` /
+`HEAL_COOLDOWN` / `START_COOLDOWN` / `RECHECK_DELAY`）。
 
 ## 一键回滚（A、B 适用；D 见上）
 
@@ -202,4 +240,4 @@ sudo chmod 755 /var/lib/sing-box; sudo chmod 644 /var/lib/sing-box/cache.db
 
 ---
 
-*提案生成：2026-10-12 · A/B/D 已装（D 的沙箱陷阱见上，已修 + 有回归测试）· 审查者：DSH agent*
+*提案生成：2026-10-12 · A/B/D 已装（D：沙箱陷阱 + 存活判据两处修正，均有回归测试钉住）· 审查者：DSH agent*

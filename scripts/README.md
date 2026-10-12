@@ -30,7 +30,7 @@
 | `harden-boot-stepwise-2026-10-12.sh` | 开机加固**一步一确认**：`cache.db` 权限 → libvirtd 排序 drop-in → UMask drop-in → 重启前标记。另有 `--preflight`（只读体检）、`--post-reboot`（采开机窗口证据）、`--rollback`。默认 dry-run | ✅（`--preflight` / `--post-reboot` / `--dry-run` 免 root） |
 | `sing-box-burst-probe.sh` | 抓住 `connection upload handshake: dial tcp …: i/o timeout` 的**下一次突发**，并在**当时**对同一端点做「裸 connect vs TFO(MSG_FASTOPEN) connect」A/B：裸通+TFO 超时 ⇒ 中间盒吃 SYN+data；两者皆超时 ⇒ 路径/中转入口丢包。只读、不用 sudo；`once <ip> <port>` 可立即单测 | ❌（只读） |
 | `sing-box-dns-watchdog.sh` | DNS 错误缓存看门狗：拿 DoH 的真实答案当基准比对本机解析，确认「DoH 有、本机没有」后清 `cache.db` 重启自愈。`--check` 只探测、`--self-test` 跑 6 个判据用例、`--heal` 才动手（systemd timer 用这个）。锁文件定位在 `$RUNTIME_DIRECTORY` —— unit 里 `ProtectSystem=strict` **连 `/run` 也挂只读**，见 `systemd/README.md` 提案 D 的"沙箱陷阱" | ✅（仅 `--heal`；`--check`/`--self-test` 免 root） |
-| `test-dns-watchdog.sh` | 看门狗的回归钉子，免 root 三层：① 静态核对 unit 的 `ReadWritePaths=`/`RuntimeDirectory=` 是否放行脚本要写的每个路径；② `systemd-run --user` 起同样沙箱做正/反向探针（写 `/run` 顶层必须被拒、`RuntimeDirectory` 里建锁必须成功）；③ `--self-test` 判据。**2026-10-12 首次装机就死在只读 `/run` 上，这条测试就是那次故障的钉子** | ✅ |
+| `test-dns-watchdog.sh` | 看门狗的回归钉子，免 root 四层：① 静态核对 unit 的 `ReadWritePaths=`/`RuntimeDirectory=` 是否放行脚本要写的每个路径；② `systemd-run --user` 起同样沙箱做正/反向探针（写 `/run` 顶层必须被拒、`RuntimeDirectory` 里建锁必须成功）；③ `--self-test` 判据；④ 把 `SYSTEMCTL` 指到 user 实例上的临时 unit，离线验证「enabled 却不 active → 报错」这条接线。**2026-10-12 首次装机死在只读 `/run`、以及当天受控演练暴露「判据一发现不了代理挂了」，这两次故障都是它钉住的** | ✅ |
 
 ## `switch-to-ebpf.sh` 的开关
 

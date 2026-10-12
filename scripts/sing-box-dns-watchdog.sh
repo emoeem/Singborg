@@ -9,23 +9,33 @@
 # （缓存落了盘）。当时表现为 Firefox 打不开 emoe.eu.cc，但 dig @8.8.8.8 /
 # @1.1.1.1 / @不可路由地址 全都被本机接管、四种结果一模一样，正是这个原因。
 #
-# 判据：拿 DoH 的**真实答案**当基准，跟本机解析结果比。DoH 走 HTTPS、并用
-# `--resolve` 直接连 IP，既不经过 53 劫持、也不依赖域名解析，所以是一个独立的
-# 事实来源。只有「DoH 说这个域名有 A 记录、而本机说没有」才算故障。
+# 判据一（缓存故障）：拿 DoH 的**真实答案**当基准，跟本机解析结果比。DoH 走
+# HTTPS、并用 `--resolve` 直接连 IP，既不经过 53 劫持、也不依赖域名解析，所以是
+# 一个独立的事实来源。只有「DoH 说这个域名有 A 记录、而本机说没有」才算故障。
 # **拿不到 DoH 基准时一律判为「无法判断」，绝不动手** —— 网络本身坏了不该被
 # 当成缓存故障来处理。
+#
+# 判据二（服务存活）：sing-box 自己死了也要能发现。**这条判据是必须的**，因为本机
+# 出网走的是它的 eBPF 透明代理（`ip route` 里没有 tun 设备，流量由 eBPF 钩子改道），
+# 它一停，连判据一要用的 DoH 基准（1.1.1.1 / 8.8.8.8 的 443）都不可达 ——
+# 2026-10-12 受控演练实测：`systemctl stop sing-box` 之后三个域名全部变成
+# 「无法判断」，判据一**永远发现不了「代理挂了」**。所以这里另用一条完全不依赖
+# 网络的判据：unit 是 enabled（管理员要求它开机就跑）却不 active → 直接 start 它。
+# 想长期停用就 `systemctl disable --now sing-box`：disabled 的 unit 看门狗不碰。
 #
 # 用法：
 #   ./sing-box-dns-watchdog.sh --check      # 只探测、只打印（不需要 root）
 #   sudo ./sing-box-dns-watchdog.sh --heal  # 探测 + 二次确认 + 自愈（systemd 跑这个）
-#   ./sing-box-dns-watchdog.sh --self-test  # 用合成输入跑判据，不联网（免 root）
+#   ./sing-box-dns-watchdog.sh --self-test  # 用合成输入跑两条判据，不联网（免 root）
 #
 # 自愈动作**只动缓存、不碰配置**：stop sing-box → 删 cache.db → start
 #   → resolvectl flush-caches → 复测。修不好就以非 0 退出，让 systemctl --failed 能看见。
+# 存活自愈只做 `systemctl start`，不删缓存、不碰配置。
 #
 # 可调项放 /etc/sing-box/dns-watchdog.conf（可选，被 source）：
 #   WATCH_DOMAINS="emoe.eu.cc www.baidu.com github.com"
-#   HEAL_COOLDOWN=900   RECHECK_DELAY=3   DOH_TIMEOUT=8
+#   WATCH_SERVICE_LIVENESS=yes   # 置 no 可关掉存活自愈
+#   HEAL_COOLDOWN=900   START_COOLDOWN=300   RECHECK_DELAY=3   DOH_TIMEOUT=8
 set -Eeuo pipefail
 
 # dig 的输出要按固定文本解析，本地化标签会让匹配悄悄变成空操作。
@@ -44,9 +54,16 @@ WATCH_DOMAINS="${WATCH_DOMAINS:-emoe.eu.cc www.baidu.com github.com}"
 DOH_TIMEOUT="${DOH_TIMEOUT:-8}"
 RECHECK_DELAY="${RECHECK_DELAY:-3}"
 HEAL_COOLDOWN="${HEAL_COOLDOWN:-900}"
+# 存活自愈的冷却期短得多：start 一个服务不打断任何流量，而且「代理挂了」是断网，
+# 值得下一个周期（timer 每 5 分钟）就再试。
+START_COOLDOWN="${START_COOLDOWN:-300}"
+WATCH_SERVICE_LIVENESS="${WATCH_SERVICE_LIVENESS:-yes}"
 STATE_FILE="${STATE_FILE:-/var/lib/sing-box/dns-watchdog.state}"
 CACHE_DB="${CACHE_DB:-/var/lib/sing-box/cache.db}"
 SERVICE="${SERVICE:-sing-box}"
+# 允许把 systemd 调用指向别的实例（自测用：SYSTEMCTL='systemctl --user'）。
+read -r -a SYSTEMCTL_CMD <<<"${SYSTEMCTL:-systemctl}"
+(( ${#SYSTEMCTL_CMD[@]} > 0 )) || SYSTEMCTL_CMD=(systemctl)
 # 锁必须落在**本进程可写**的目录里。unit 里的 ProtectSystem=strict 会把整个层次
 # 挂成只读 —— 连 /run 本身也不例外，唯一例外是 RuntimeDirectory= 声明的那一个目录。
 # 2026-10-12 首次装机正是死在这里：
@@ -59,7 +76,8 @@ mode="check"
 
 log() { printf '[dns-watchdog] %s\n' "$*"; }
 
-usage() { sed -n '2,28p' "${BASH_SOURCE[0]}"; }
+# 打印文件头部的注释块：从第 2 行到 `set -Eeuo pipefail` 之前。改注释不必同步改行号。
+usage() { sed -n '2,/^set -Eeuo pipefail$/p' "${BASH_SOURCE[0]}" | sed '$d'; }
 
 while (( $# > 0 )); do
     case "$1" in
@@ -122,20 +140,66 @@ wd_verdict() {
     printf 'ok\n'
 }
 
-state_last_heal() {
-    [[ -r "$STATE_FILE" ]] || {
-        printf '0\n'
-        return 0
-    }
-    local value
-    value="$(sed -n 's/^last_heal=//p' "$STATE_FILE" | head -n1)"
+state_read() {
+    local key="$1" value=""
+    [[ -r "$STATE_FILE" ]] && value="$(sed -n "s/^${key}=//p" "$STATE_FILE" | head -n1)"
     [[ "$value" =~ ^[0-9]+$ ]] || value=0
     printf '%s\n' "$value"
 }
 
-state_write_heal() {
+state_write() {
+    local key="$1" value="$2" tmp
     mkdir -p -- "$(dirname -- "$STATE_FILE")"
-    printf 'last_heal=%s\n' "$1" >"$STATE_FILE"
+    tmp="$(mktemp -- "${STATE_FILE}.XXXXXX")"
+    {
+        [[ -r "$STATE_FILE" ]] && grep -v "^${key}=" "$STATE_FILE" || true
+        printf '%s=%s\n' "$key" "$value"
+    } >"$tmp"
+    mv -f -- "$tmp" "$STATE_FILE"
+}
+
+state_last_heal() { state_read last_heal; }
+state_write_heal() { state_write last_heal "$1"; }
+state_last_start() { state_read last_start; }
+state_write_start() { state_write last_start "$1"; }
+
+# --- 判据二：服务存活（见文件头）。本机出网走 sing-box 的 eBPF 透明代理，它一停，
+# 连 DoH 基准都不可达，判据一只会得到「无法判断」——所以这条判据必须独立于网络。
+service_active_state() {
+    "${SYSTEMCTL_CMD[@]}" show -p ActiveState --value "$SERVICE" 2>/dev/null || printf 'unknown\n'
+}
+
+service_unit_state() {
+    "${SYSTEMCTL_CMD[@]}" show -p UnitFileState --value "$SERVICE" 2>/dev/null || printf 'unknown\n'
+}
+
+# 纯函数（便于自测）：<ActiveState> <UnitFileState> -> alive|dead|intentional
+#   alive       在跑、或正在状态迁移中（systemd 自带的 Restart= 在处理）——不插手
+#   dead        unit 是 enabled（管理员要求它开机就跑）却没在跑 —— 该 start
+#   intentional 没在跑、也没被 enable（用户有意停用）—— 不碰
+wd_liveness_verdict() {
+    local active="$1" unit="$2"
+    case "$active" in
+        active | reloading | activating | deactivating)
+            printf 'alive\n'
+            return 0
+            ;;
+    esac
+    case "$unit" in
+        enabled | enabled-runtime)
+            printf 'dead\n'
+            return 0
+            ;;
+    esac
+    printf 'intentional\n'
+}
+
+liveness_verdict_now() {
+    if [[ "$WATCH_SERVICE_LIVENESS" != "yes" ]]; then
+        printf 'alive\n'
+        return 0
+    fi
+    wd_liveness_verdict "$(service_active_state)" "$(service_unit_state)"
 }
 
 self_test() {
@@ -152,6 +216,28 @@ self_test() {
             failures=$(( failures + 1 ))
         fi
     }
+    # 判据二的合成用例。
+    run_live() {
+        local expect="$1" active="$2" unit="$3" got
+        got="$(wd_liveness_verdict "$active" "$unit")"
+        if [[ "$got" == "$expect" ]]; then
+            printf 'ok   存活 ActiveState=%s UnitFileState=%s -> %s\n' "$active" "$unit" "$got"
+        else
+            printf 'FAIL 存活 ActiveState=%s UnitFileState=%s -> %s（期望 %s）\n' \
+                "$active" "$unit" "$got" "$expect"
+            failures=$(( failures + 1 ))
+        fi
+    }
+    # 2026-10-12 受控演练的真实签名：stop sing-box 之后 DoH 基准一起不可达。
+    run_live dead inactive enabled
+    run_live dead failed enabled
+    # 正在跑、或 systemd 自己在拉它（Restart=），都不该插手。
+    run_live alive active enabled
+    run_live alive activating enabled
+    # 用户有意停用（disabled / masked）：不碰。
+    run_live intentional inactive disabled
+    run_live intentional failed masked
+
     # 2026-10-12 事故的真实签名：DoH 2 条，本机两种问法都 0 条。
     run_case fault 2 0 0
     # 原始事故更微妙的一档：带 EDNS0 能过、不带就 0 条（缓存键不同）。
@@ -188,11 +274,40 @@ if [[ "$mode" == "heal" ]]; then
         log '已有实例在运行，跳过本轮'
         exit 0
     }
+
+    # 存活自愈放在最前面：它不依赖网络（只用 systemctl），而且 sing-box 一死，
+    # 下面那套 DoH 基准也一起不可达，探测只会得到「无法判断」。
+    if [[ "$(liveness_verdict_now)" == "dead" ]]; then
+        active_state="$(service_active_state)"
+        unit_state="$(service_unit_state)"
+        log "$SERVICE 处于 $unit_state 却不活动（ActiveState=$active_state）→ 尝试启动"
+        if (( EUID != 0 )); then
+            log '启动服务需要 root：请用 sudo，或让 systemd unit 来跑'
+            exit 2
+        fi
+        now="$(date +%s)"
+        last="$(state_last_start)"
+        if (( last > 0 && now - last < START_COOLDOWN )); then
+            log "距上次存活自愈 $(( now - last ))s，仍在冷却期（${START_COOLDOWN}s）内；本轮不重启"
+            exit 1
+        fi
+        state_write_start "$now"
+        "${SYSTEMCTL_CMD[@]}" start "$SERVICE" || true
+        sleep 2
+        if "${SYSTEMCTL_CMD[@]}" is-active --quiet "$SERVICE"; then
+            log "存活自愈成功：$SERVICE 已启动（继续做 DNS 判据）"
+        else
+            log "存活自愈失败：$SERVICE 起不来 —— 看 journalctl -u $SERVICE（多半是配置或端口问题）"
+            exit 1
+        fi
+    fi
 fi
 
 faults=()
 inconclusive=0
+total=0
 for domain in $WATCH_DOMAINS; do
+    total=$(( total + 1 ))
     local_count="$(resolve_count "$domain")"
     noedns_count="$(resolve_count "$domain" '+noedns')"
     if ! truth="$(doh_count "$domain")"; then
@@ -207,8 +322,26 @@ for domain in $WATCH_DOMAINS; do
     fi
 done
 
+# 存活状态在这里求值：它可能正是"DoH 基准拿不到"的原因，所以必须在任何 exit 之前看一眼。
+live="$(liveness_verdict_now)"
+
 if (( ${#faults[@]} == 0 )); then
-    log "解析正常${inconclusive:+（$inconclusive 个域名无法判断）}"
+    if [[ "$live" == "dead" ]]; then
+        log "$SERVICE 处于 $(service_unit_state) 却不活动（ActiveState=$(service_active_state)）—— 这很可能就是上面拿不到 DoH 基准的原因"
+        if [[ "$mode" == "check" ]]; then
+            log '--check 模式不做任何改动；确认后请用 sudo 跑 --heal'
+        fi
+        exit 1
+    fi
+    if (( inconclusive == 0 )); then
+        log '解析正常'
+    elif (( inconclusive >= total )); then
+        # 全部无法判断：DoH 基准完全不可达。不做任何改动（可能只是整条网络坏了），
+        # 但也不再假称"解析正常" —— 2026-10-12 演练当时打印的正是这句误导性的话。
+        log "全部无法判断：$inconclusive 个域名的 DoH 基准都拿不到；按设计不动手"
+    else
+        log "解析正常（$inconclusive 个域名无法判断）"
+    fi
     exit 0
 fi
 
@@ -236,10 +369,12 @@ if (( ${#confirmed[@]} == 0 )); then
     exit 0
 fi
 
-if ! systemctl is-active --quiet "$SERVICE"; then
-    # 服务都没在跑，"清缓存"不是它的问题（此时 53 劫持也不存在，探测结果本身可疑）。
-    log "$SERVICE 未在运行；这不是缓存故障，交给别的排查手段"
-    exit 0
+if ! "${SYSTEMCTL_CMD[@]}" is-active --quiet "$SERVICE"; then
+    # 走到这里说明：有确认过的解析故障，但服务没在跑。存活自愈要么被关掉了
+    # （WATCH_SERVICE_LIVENESS=no），要么它刚刚已经试过并且失败 —— 无论哪种，
+    # "删缓存"都不是现在该做的事。
+    log "$SERVICE 未在运行；这不是缓存故障（存活自愈已关闭或刚刚失败）"
+    exit 1
 fi
 
 now="$(date +%s)"
@@ -257,13 +392,13 @@ fi
 log "确认故障：${confirmed[*]}；开始自愈"
 state_write_heal "$now"
 
-systemctl stop "$SERVICE"
+"${SYSTEMCTL_CMD[@]}" stop "$SERVICE"
 removed=no
 if [[ -e "$CACHE_DB" ]]; then
     rm -f -- "$CACHE_DB"
     removed=yes
 fi
-systemctl start "$SERVICE"
+"${SYSTEMCTL_CMD[@]}" start "$SERVICE"
 if command -v resolvectl >/dev/null 2>&1; then
     resolvectl flush-caches 2>/dev/null || true
 fi

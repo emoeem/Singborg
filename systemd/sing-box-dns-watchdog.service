@@ -1,8 +1,8 @@
 [Unit]
-Description=sing-box DNS 看门狗（清除错误的否定缓存并自愈）
+Description=sing-box DNS 看门狗（清错误否定缓存 + 服务存活自愈）
 Documentation=https://github.com/emoeem/Singborg
 # 排在 sing-box 之后：探测的是它提供的解析路径。不用 BindsTo/PartOf ——
-# 自愈时要 stop/start 的正是它，绑在一起会把自己也带下去。
+# 自愈时要 stop/start（或 start）的正是它，绑在一起会把自己也带下去。
 After=sing-box.service network-online.target
 Wants=network-online.target
 
@@ -10,8 +10,8 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=/usr/local/bin/sing-box-dns-watchdog --heal
 
-# 只清缓存、不写配置：整个文件系统只读，只放行 cache.db / 状态文件所在的
-# /var/lib/sing-box，以及运行期锁文件所在的 RuntimeDirectory。
+# 只清缓存 / 只启动服务，不写配置：整个文件系统只读，只放行 cache.db 与状态文件
+# 所在的 /var/lib/sing-box，以及运行期锁文件所在的 RuntimeDirectory。
 #
 # ⚠️ ProtectSystem=strict 连 /run 本身也挂成只读，所以锁**不能**直接放
 #    /run/xxx.lock —— 2026-10-12 首次安装就死在这儿：
@@ -19,7 +19,8 @@ ExecStart=/usr/local/bin/sing-box-dns-watchdog --heal
 #    RuntimeDirectory= 会把 /run/sing-box-dns-watchdog 建好、隐含加入可写集
 #    （无需再写进 ReadWritePaths），并在 unit 停止后清掉。脚本用
 #    $RUNTIME_DIRECTORY 定位锁文件，手跑时该变量为空、退回 /run。
-# systemctl / resolvectl 走 D-Bus（连的是 socket，不受只读挂载影响），实测可用。
+# systemctl / resolvectl 走 D-Bus（连的是 socket，不受只读挂载影响），实测可用 ——
+# 存活自愈要 `systemctl start sing-box`，靠的就是这一点。
 ProtectSystem=strict
 ReadWritePaths=/var/lib/sing-box
 RuntimeDirectory=sing-box-dns-watchdog
