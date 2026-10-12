@@ -1,0 +1,15 @@
+[Unit]
+Description=每 5 分钟检查 sing-box 的 DNS 解析是否被错误的否定缓存污染
+Documentation=https://github.com/emoeem/Singborg
+
+[Timer]
+# 开机 3 分钟后先跑一次（开机窗口是 DNS 最容易出问题的时候），之后每 5 分钟一次。
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+# 看门狗关心的是「现在是不是坏的」：错过的窗口补跑没有意义（Persistent=true
+# 会在关机期间攒下多次运行，反而在开机瞬间堆在一起）。
+Persistent=false
+
+[Install]
+WantedBy=timers.target

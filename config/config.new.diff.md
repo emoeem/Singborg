@@ -206,7 +206,7 @@ bash scripts/apply-config-new-2026-10-12.sh --apply --config config/config.sanit
 
 | 目录 | 文件数 | 时间 | 归属 | 是否需要动作 |
 | --- | --- | --- | --- | --- |
-| `/usr/share/sing-box/rule-set/` | 2131 | 1893 个 @10-10 13:22、238 个 @09-12 21:10 | 包 `sing-geosite-rule-set 20261009101206-1` + `sing-geoip-rule-set 20260912-1` | ❌ 由 `emoeem-repo-update.timer`（10-12 08:45 刚跑过，下次 12:32）随包升级自动刷新 |
+| `/usr/share/sing-box/rule-set/` | 2131 | 1893 个 @10-10 13:22、238 个 @09-12 21:10 | 包 `sing-geosite-rule-set 20261009101206-1` + `sing-geoip-rule-set 20260912-1` | ❌ 由 `emoeem-repo-update.timer`（10-12 08:45 刚跑过，下次 12:32）随包升级自动刷新（⚠️ 此句是错的，见文末更正） |
 | `/usr/share/sing-box-rule-sets/` | 9 | 全部 @10-11 13:17 | 包 `sing-box-rule-sets 20261011-1` | ❌ 同上，包更新即刷新 |
 | `/etc/sing-box/rule-set/` | **2** | 全部 @**10-01 21:20** | **手工资产**（无包归属） | ⚠️ 只有这 2 个需要你决定 |
 
@@ -224,3 +224,11 @@ bash scripts/apply-config-new-2026-10-12.sh --apply --config config/config.sanit
 *生成：2026-10-12 · v2 · 本文档未修改任何线上文件；唯一落地改动 `urltest.interval` 5m→3m（4 处）
 已于 2026-10-12 10:11:40 由用户确认后应用（备份 `/etc/sing-box/backups/config.json.bak.20261012-101140`，
 验收见 docs/11 §7.1）*
+
+---
+
+*更正（2026-10-12 晚 · 实测）：上面表格里"由 `emoeem-repo-update.timer`（10-12 08:45 刚跑过）
+随包升级自动刷新"不成立 —— 那个 service 4 次触发、4 次失败、0 次成功
+（`Git repository not found: /var/lib/emoeem-repo`），08:45:57 那次正是失败的。规则集包实际是
+`pacman -Syu` 时随 `[emoeem]` 滚动 release 更新的（手动，非自动）。详见
+`docs/11-配置审查与优化报告-2026-10-12.md` 末尾的「更正」段。*

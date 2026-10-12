@@ -60,10 +60,21 @@ ls -l /var/lib/sing-box/cache.db                          # 期望 -rw------- ro
 
 ## 提案 C · 规则集刷新 timer —— **本次不建议做**（结论已修正）
 
+> ⚠️ **更正（2026-10-12 晚 · 实测）**：本节原先写"由 `emoeem-repo-update.timer` 自动更新
+> （今天 08:45:57 跑过，下次 12:32:08）"——**这个前提是错的**。journal 里那个 service
+> **4 次触发、4 次失败、0 次成功**，每次都是 `Git repository not found: /var/lib/emoeem-repo`
+> （该目录不存在），而且它当时是 `systemctl --failed` 里**唯一**一项，把真正的开机问题盖住了。
+> 规则集包实际由 `pacman` 安装（`/var/log/pacman.log`：
+> `[ALPM] upgraded sing-box-rule-sets (20261010-1 -> 20261011-1)` @2026-10-11T14:56:07），
+> 即**手动 `pacman -Syu` 时随 `[emoeem]` 滚动 release 更新**。那套 timer 的安装器已在
+> `11d8cde` 删除，机器上这套是残留 —— 清理见
+> `~/pkgbuild-source/scripts/remove-legacy-repo-update.sh`（默认 dry-run，`--apply` 才删）。
+
 核对包归属后：`/usr/share/sing-box/rule-set/`（2131 份）与 `/usr/share/sing-box-rule-sets/`
-（9 份）**全部由 emoeem 仓库的包管理**，并由 `emoeem-repo-update.timer` 自动更新
-（今天 08:45:57 跑过，下次 12:32:08）。真正"停在 10-01"的只有手工放进
-`/etc/sing-box/rule-set/` 的 **2 份**（`AWAvenue-Ads-Rule.srs`、`geoip-telegram.srs`）。
+（9 份）**全部由 emoeem 仓库的包管理** —— 但更新时机是 `pacman -Syu`，**不是自动的**。
+真正"停在 10-01"的只有手工放进 `/etc/sing-box/rule-set/` 的 **2 份**
+（`AWAvenue-Ads-Rule.srs`、`geoip-telegram.srs`）。也就是说那 2139 份的新鲜度取决于你是否
+记得跑 `pacman -Syu`（`ffmpeg-full` 2.7→2.8 卡在本地索引上就是这个原因）。
 
 结论：**不为这 2 份建 timer**（收益低、多一个写 `/etc` 的定时任务）。
 需要更新时手工做，并保留旧文件：
@@ -81,7 +92,51 @@ sudo /usr/bin/sing-box check -c /etc/sing-box/config.json && sudo systemctl relo
 同时建议把 `scripts/refresh-rule-sets.sh` 头部那句指向**不存在的 `~/pkgbuild-source`** 的路径
 修掉，或在脚本里显式标注"已废弃，改用 emoeem 仓库包更新"——现在它会误导人。
 
-## 一键回滚（A、B 都适用）
+## 提案 D · `sing-box-dns-watchdog.{service,timer}`（DNS 错误缓存自愈）—— **已备好，待装**
+
+**要解决的问题**（2026-10-12 实测）：eBPF 入站的 `dns_mode: hijack` 把所有 UDP/53 查询截到
+sing-box 自己的 DNS 缓存，而 `experimental.cache_file.store_dns = true` 把它落了盘
+（`/var/lib/sing-box/cache.db`）。缓存里一旦存下一条**错误的否定应答（NODATA）**，命中它的
+查询会"0 条答案、0 ms"返回，而带 EDNS0 的查询因缓存键不同会绕过它 —— 症状是「某些网站
+打不开、别的都正常」，而且**重启不消失**（缓存落了盘）。当时表现为 Firefox 打不开 `emoe.eu.cc`。
+
+**判据**：拿 DoH 的真实答案当基准（`curl --resolve` 直连 `1.1.1.1`/`8.8.8.8`，既不经过 53
+劫持、也不依赖域名解析），只有「DoH 有 A 记录、本机说没有」才算故障；**拿不到 DoH 基准时
+一律判为"无法判断"，绝不动手**（网络本身坏了不该被当成缓存故障去重启代理）。
+
+```bash
+# 安装（需要 root）
+sudo install -m755 ~/code/Singborg/scripts/sing-box-dns-watchdog.sh /usr/local/bin/sing-box-dns-watchdog
+sudo install -m644 ~/code/Singborg/systemd/sing-box-dns-watchdog.service \
+                    ~/code/Singborg/systemd/sing-box-dns-watchdog.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now sing-box-dns-watchdog.timer
+```
+
+验收：
+
+```bash
+/usr/local/bin/sing-box-dns-watchdog --check       # 免 root，三个域名应当都 ok
+/usr/local/bin/sing-box-dns-watchdog --self-test   # 免 root，判据的 6 个合成用例
+systemctl list-timers sing-box-dns-watchdog.timer  # 期望 5 分钟一次
+journalctl -u sing-box-dns-watchdog.service -n 20  # 每次运行一行
+```
+
+回滚（D 独立于 A/B，可单独卸）：
+
+```bash
+sudo systemctl disable --now sing-box-dns-watchdog.timer
+sudo rm -f /etc/systemd/system/sing-box-dns-watchdog.{service,timer} \
+           /usr/local/bin/sing-box-dns-watchdog
+sudo systemctl daemon-reload
+```
+
+自愈动作**只动缓存、不碰配置**：`stop sing-box → 删 cache.db → start → resolvectl
+flush-caches → 复测`；修不好就以非 0 退出（这样 `systemctl --failed` 看得见），不安静重试。
+冷却 900s，避免在"清缓存也没用"的故障上反复重启代理。定时任务每 5 分钟跑一次 `--heal`。
+可调项写 `/etc/sing-box/dns-watchdog.conf`（`WATCH_DOMAINS` / `HEAL_COOLDOWN` / `RECHECK_DELAY`）。
+
+## 一键回滚（A、B 适用；D 见上）
 
 ```bash
 sudo rm -f /etc/systemd/system/sing-box.service.d/30-umask-hardening.conf \
@@ -98,8 +153,11 @@ sudo chmod 755 /var/lib/sing-box; sudo chmod 644 /var/lib/sing-box/cache.db
    （见 `config/config.new.diff.md` §6）。
 3. 装提案 B（纯权限，风险最低）→ `systemctl show` 验收。
 4. 装提案 A（时序）→ `systemctl show -p After` 验收，可选重启一次做真实开机验收（`docs/12` §6）。
-5. 每次只装一个，装完立刻看 `journalctl -u sing-box -p warning`。
+5. 装提案 D（DNS 看门狗，与 A/B 无依赖，可最先装）→ `--check` + `--self-test` + `list-timers` 验收。
+6. 清理残留 `emoeem-repo-update`（`~/pkgbuild-source/scripts/remove-legacy-repo-update.sh`，
+   先跑默认的 dry-run，确认输出的 4 个路径无误再 `sudo ... --apply`）。
+7. 每次只装一个，装完立刻看 `journalctl -u sing-box -p warning`。
 
 ---
 
-*提案生成：2026-10-12 · 均未安装 · 审查者：DSH agent*
+*提案生成：2026-10-12 · 均未安装（含提案 D）· 审查者：DSH agent*

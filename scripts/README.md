@@ -29,6 +29,7 @@
 | `apply-config-new-2026-10-12.sh` | 把 `config/config.new.json` 的改动落到现网（默认只改 4 个 urltest 的 `interval` 5m→3m）：备份 → `sing-box check` → 原子替换 → 重启 → 健康检查 → **失败自动回滚**。加 `--with-dns-local` 才动 DNS，且先探测再写 | ✅（`--dry-run` 免 root 预览） |
 | `harden-boot-stepwise-2026-10-12.sh` | 开机加固**一步一确认**：`cache.db` 权限 → libvirtd 排序 drop-in → UMask drop-in → 重启前标记。另有 `--preflight`（只读体检）、`--post-reboot`（采开机窗口证据）、`--rollback`。默认 dry-run | ✅（`--preflight` / `--post-reboot` / `--dry-run` 免 root） |
 | `sing-box-burst-probe.sh` | 抓住 `connection upload handshake: dial tcp …: i/o timeout` 的**下一次突发**，并在**当时**对同一端点做「裸 connect vs TFO(MSG_FASTOPEN) connect」A/B：裸通+TFO 超时 ⇒ 中间盒吃 SYN+data；两者皆超时 ⇒ 路径/中转入口丢包。只读、不用 sudo；`once <ip> <port>` 可立即单测 | ❌（只读） |
+| `sing-box-dns-watchdog.sh` | DNS 错误缓存看门狗：拿 DoH 的真实答案当基准比对本机解析，确认「DoH 有、本机没有」后清 `cache.db` 重启自愈。`--check` 只探测、`--self-test` 跑 6 个判据用例、`--heal` 才动手（systemd timer 用这个） | ✅（仅 `--heal`；`--check`/`--self-test` 免 root） |
 
 ## `switch-to-ebpf.sh` 的开关
 
