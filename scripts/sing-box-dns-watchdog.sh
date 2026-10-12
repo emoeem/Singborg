@@ -47,7 +47,13 @@ HEAL_COOLDOWN="${HEAL_COOLDOWN:-900}"
 STATE_FILE="${STATE_FILE:-/var/lib/sing-box/dns-watchdog.state}"
 CACHE_DB="${CACHE_DB:-/var/lib/sing-box/cache.db}"
 SERVICE="${SERVICE:-sing-box}"
-LOCK_FILE="${LOCK_FILE:-/run/sing-box-dns-watchdog.lock}"
+# 锁必须落在**本进程可写**的目录里。unit 里的 ProtectSystem=strict 会把整个层次
+# 挂成只读 —— 连 /run 本身也不例外，唯一例外是 RuntimeDirectory= 声明的那一个目录。
+# 2026-10-12 首次装机正是死在这里：
+#   line 180: /run/sing-box-dns-watchdog.lock: Read-only file system
+# systemd 会把这个目录的路径放进 $RUNTIME_DIRECTORY；手跑（sudo）时该变量为空，
+# 退回 /run，行为与修复前一致。
+LOCK_FILE="${LOCK_FILE:-${RUNTIME_DIRECTORY:-/run}/sing-box-dns-watchdog.lock}"
 
 mode="check"
 
