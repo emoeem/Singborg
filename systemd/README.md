@@ -109,10 +109,13 @@ sing-box 自己的 DNS 缓存，而 `experimental.cache_file.store_dns = true` �
 一律判为"无法判断"，绝不动手**（网络本身坏了不该被当成缓存故障去重启代理）。
 
 **判据二（服务存活）**：unit 是 `enabled`（管理员要求它开机就跑）却不 `active` → 直接
-`systemctl start` 它。**这条不是锦上添花**：本机出网走 sing-box 的 eBPF 透明代理（`ip route`
-里没有 tun 设备），它一停，连判据一要用的 DoH 基准都不可达 —— 2026-10-12 受控演练实测，
-这种情况下判据一**永远只会说"无法判断"**（见下一节）。判据二完全不依赖网络，所以不受这个
-死循环影响。想长期停用请 `systemctl disable --now sing-box`：`disabled` 的 unit 看门狗不碰。
+`systemctl start` 它（若已被钉在 `failed` —— 崩溃循环撞上 `StartLimitBurst` 后 `start`
+会被 systemd 拒绝 —— 先 `reset-failed`）。**这条不是锦上添花**：本机出网走 sing-box 的
+eBPF 透明代理（`ip route` 里没有 tun 设备），它一停，连判据一要用的 DoH 基准都不可达 ——
+2026-10-12 受控演练实测，这种情况下判据一**永远只会说"无法判断"**（见下一节）。判据二
+完全不依赖网络，所以不受这个死循环影响。注意它补的是 systemd 自带 `Restart=on-failure`
+覆盖不到的那部分：单次崩溃 systemd 自己会拉，撞了启动频率上限就只剩 reset-failed 一条路。
+想长期停用请 `systemctl disable --now sing-box`：`disabled` 的 unit 看门狗不碰。
 
 ```bash
 # 安装（需要 root）
@@ -194,7 +197,7 @@ systemctl is-active sing-box                          # 期望：active（不再
 ```bash
 /usr/local/bin/sing-box-dns-watchdog --check       # 免 root，三个域名应当都 ok，且不报「却不活动」
 /usr/local/bin/sing-box-dns-watchdog --self-test   # 免 root，两条判据的 12 个合成用例
-~/code/Singborg/scripts/test-dns-watchdog.sh       # 免 root，13 项（沙箱放行核对 + 真沙箱正/反向探针 + 存活判据接线）
+~/code/Singborg/scripts/test-dns-watchdog.sh       # 免 root，14 项（沙箱放行核对 + 真沙箱正/反向探针 + 存活判据接线）
 systemctl list-timers sing-box-dns-watchdog.timer  # 期望 5 分钟一次
 journalctl -u sing-box-dns-watchdog.service -n 20  # 每次运行一行
 systemctl is-failed sing-box-dns-watchdog.service  # 期望 inactive（不是 failed）

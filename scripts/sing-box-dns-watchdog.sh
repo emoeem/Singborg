@@ -20,8 +20,10 @@
 # 它一停，连判据一要用的 DoH 基准（1.1.1.1 / 8.8.8.8 的 443）都不可达 ——
 # 2026-10-12 受控演练实测：`systemctl stop sing-box` 之后三个域名全部变成
 # 「无法判断」，判据一**永远发现不了「代理挂了」**。所以这里另用一条完全不依赖
-# 网络的判据：unit 是 enabled（管理员要求它开机就跑）却不 active → 直接 start 它。
-# 想长期停用就 `systemctl disable --now sing-box`：disabled 的 unit 看门狗不碰。
+# 网络的判据：unit 是 enabled（管理员要求它开机就跑）却不 active → 直接 start 它；
+# 若它已被钉在 failed（崩溃循环撞上 StartLimitBurst，此后 start 会被 systemd 拒绝），
+# 先 reset-failed 再 start。想长期停用就 `systemctl disable --now sing-box`：
+# disabled 的 unit 看门狗不碰。
 #
 # 用法：
 #   ./sing-box-dns-watchdog.sh --check      # 只探测、只打印（不需要 root）
@@ -292,6 +294,15 @@ if [[ "$mode" == "heal" ]]; then
             exit 1
         fi
         state_write_start "$now"
+        # 失败态要先清掉：sing-box 是 Restart=on-failure + RestartUSec=10s，连崩几次就会
+        # 撞上 StartLimitBurst，此后 systemd 把该 unit 钉在 failed，`systemctl start`
+        # 会被直接拒绝（"start of the service was attempted too often"）。这正是判据二
+        # 相对 systemd 自带重启策略的价值：单次崩溃 systemd 自己会拉，撞了启动频率上限
+        # 之后只有 reset-failed 才拉得回来。
+        if [[ "$active_state" == "failed" ]]; then
+            log "$SERVICE 处于 failed 状态，先 reset-failed 再启动"
+            "${SYSTEMCTL_CMD[@]}" reset-failed "$SERVICE" || true
+        fi
         "${SYSTEMCTL_CMD[@]}" start "$SERVICE" || true
         sleep 2
         if "${SYSTEMCTL_CMD[@]}" is-active --quiet "$SERVICE"; then

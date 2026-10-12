@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016
+# （上面这条是给下面几处 `grep -F` 用的：那些 pattern 就是要按字面匹配的源码片段，
+#   里面的 `$` 是脚本源码里的字符，不能展开。）
 # 钉子：看门狗 unit 的沙箱放行范围，必须覆盖脚本会写的每一个路径。
 #
 # 为什么需要它（2026-10-12 真实故障）：unit 里的 ProtectSystem=strict 把整个文件
@@ -149,6 +152,16 @@ if [[ "${starts:-0}" -ge 2 ]]; then
     ok "两处启动调用点都在（存活自愈 + 缓存自愈）：$starts 处"
 else
     bad "启动调用点只有 ${starts:-0} 处（期望 2：存活自愈与缓存自愈各一处）"
+fi
+
+# 崩溃循环撞上 StartLimitBurst 之后 unit 会被钉在 failed，此时不带 reset-failed 的
+# start 会被 systemd 直接拒绝 —— 这条顺序必须钉住。
+reset_line="$(grep -nF '"${SYSTEMCTL_CMD[@]}" reset-failed "$SERVICE"' "$script" | head -n1 | cut -d: -f1)"
+first_start="$(grep -nF '${SYSTEMCTL_CMD[@]}" start "$SERVICE"' "$script" | head -n1 | cut -d: -f1)"
+if [[ -n "$reset_line" && -n "$first_start" ]] && (( reset_line < first_start )); then
+    ok "reset-failed 排在启动之前（第 $reset_line 行 < 第 $first_start 行）—— 崩溃循环后也拉得回来"
+else
+    bad "reset-failed 没有排在启动之前（reset=${reset_line:-未找到} start=${first_start:-未找到}）"
 fi
 
 user_ready=no
